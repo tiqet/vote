@@ -22,6 +22,12 @@ pub struct SecurityConfig {
 
     /// Maximum age for timestamps (prevent replay attacks)
     pub max_timestamp_age_seconds: u64,
+
+    /// Key rotation interval in seconds (default: 24 hours)
+    pub key_rotation_interval_seconds: Option<u64>,
+
+    /// Key rotation overlap period in seconds (default: 1 hour)
+    pub key_rotation_overlap_seconds: Option<u64>,
 }
 
 impl SecurityConfig {
@@ -54,12 +60,22 @@ impl SecurityConfig {
             .parse()
             .map_err(|_| Error::internal("Invalid CRYPTO_MAX_TIMESTAMP_AGE_SECONDS"))?;
 
+        let key_rotation_interval_seconds = std::env::var("CRYPTO_KEY_ROTATION_INTERVAL_SECONDS")
+            .ok()
+            .and_then(|s| s.parse().ok());
+
+        let key_rotation_overlap_seconds = std::env::var("CRYPTO_KEY_ROTATION_OVERLAP_SECONDS")
+            .ok()
+            .and_then(|s| s.parse().ok());
+
         Ok(Self {
             voter_salt,
             token_salt,
             key_expiry_seconds,
             max_crypto_ops_per_second,
             max_timestamp_age_seconds,
+            key_rotation_interval_seconds,
+            key_rotation_overlap_seconds,
         })
     }
 
@@ -67,32 +83,28 @@ impl SecurityConfig {
     pub fn for_testing() -> Result<Self> {
         use base64::Engine;
         // Generate secure random salts for testing
-        let voter_salt =
-            base64::engine::general_purpose::STANDARD.encode(&rand::random::<[u8; 32]>());
-        let token_salt =
-            base64::engine::general_purpose::STANDARD.encode(&rand::random::<[u8; 32]>());
+        let voter_salt = base64::engine::general_purpose::STANDARD.encode(&rand::random::<[u8; 32]>());
+        let token_salt = base64::engine::general_purpose::STANDARD.encode(&rand::random::<[u8; 32]>());
 
         Ok(Self {
             voter_salt,
             token_salt,
-            key_expiry_seconds: 3600,       // 1 hour for testing
+            key_expiry_seconds: 3600, // 1 hour for testing
             max_crypto_ops_per_second: 100, // Relaxed for testing
             max_timestamp_age_seconds: 300, // 5 minutes
+            key_rotation_interval_seconds: Some(300), // 5 minutes for testing
+            key_rotation_overlap_seconds: Some(60),   // 1 minute for testing
         })
     }
 
     /// Validate a base64-encoded salt
     fn validate_salt(salt: &str, name: &str) -> Result<()> {
         use base64::Engine;
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(salt)
+        let decoded = base64::engine::general_purpose::STANDARD.decode(salt)
             .map_err(|_| Error::internal(&format!("{} must be valid base64", name)))?;
 
         if decoded.len() < 32 {
-            return Err(Error::internal(&format!(
-                "{} must be at least 32 bytes when decoded",
-                name
-            )));
+            return Err(Error::internal(&format!("{} must be at least 32 bytes when decoded", name)));
         }
 
         Ok(())
@@ -101,17 +113,31 @@ impl SecurityConfig {
     /// Get voter salt as bytes
     pub fn voter_salt_bytes(&self) -> Result<Vec<u8>> {
         use base64::Engine;
-        base64::engine::general_purpose::STANDARD
-            .decode(&self.voter_salt)
+        base64::engine::general_purpose::STANDARD.decode(&self.voter_salt)
             .map_err(|_| Error::internal("Invalid voter salt"))
     }
 
     /// Get token salt as bytes
     pub fn token_salt_bytes(&self) -> Result<Vec<u8>> {
         use base64::Engine;
-        base64::engine::general_purpose::STANDARD
-            .decode(&self.token_salt)
+        base64::engine::general_purpose::STANDARD.decode(&self.token_salt)
             .map_err(|_| Error::internal("Invalid token salt"))
+    }
+
+    /// Create key rotation configuration from security config
+    pub fn key_rotation_config(&self) -> crate::crypto::key_rotation::KeyRotationConfig {
+        let rotation_interval = self.key_rotation_interval_seconds.unwrap_or(86400); // 24 hours default
+        let overlap_period = self.key_rotation_overlap_seconds.unwrap_or(3600);     // 1 hour default
+
+        // Calculate appropriate check interval (should be much smaller than rotation interval)
+        let check_interval = std::cmp::min(3600, rotation_interval / 4); // Check every hour OR quarter of rotation, whichever is smaller
+
+        crate::crypto::key_rotation::KeyRotationConfig {
+            rotation_interval,
+            overlap_period,
+            check_interval,
+            max_previous_keys: 3,  // Keep 3 previous keys
+        }
     }
 }
 
@@ -139,7 +165,10 @@ impl Config {
             format: std::env::var("LOG_FORMAT").unwrap_or_else(|_| "json".to_string()),
         };
 
-        Ok(Self { security, logging })
+        Ok(Self {
+            security,
+            logging,
+        })
     }
 
     /// Create configuration for testing
@@ -151,7 +180,10 @@ impl Config {
             format: "pretty".to_string(),
         };
 
-        Ok(Self { security, logging })
+        Ok(Self {
+            security,
+            logging,
+        })
     }
 }
 

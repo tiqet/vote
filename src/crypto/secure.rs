@@ -125,6 +125,7 @@ impl SecureSaltManager {
 }
 
 /// Memory-safe cryptographic key pair (memory clearing to be added in next iteration)
+#[derive(Clone, Debug)]
 pub struct SecureKeyPair {
     signing_key: SigningKey,
     verifying_key: VerifyingKey,

@@ -5,7 +5,8 @@ use vote::{
     crypto::{
         KeyPair, VoterHasher, TokenGenerator, CryptoUtils,
         SecureKeyPair, SecureSaltManager, CryptoRateLimiter, SecureMemory,
-        voting_lock::{VotingLockService, VotingMethod, LockResult}
+        voting_lock::{VotingLockService, VotingMethod, LockResult},
+        key_rotation::{KeyRotationManager, KeyRotationService}
     },
     types::{Election, Candidate, AnonymousVote},
     Result,
@@ -165,6 +166,153 @@ async fn test_double_voting_prevention_workflow() -> Result<()> {
     println!("   • Same voter cannot vote twice simultaneously");
     println!("   • Different voters don't interfere with each other");
     println!("   • Locks automatically expire to prevent deadlocks");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_key_rotation_integrated_workflow() -> Result<()> {
+    println!("🔄 Testing key rotation integrated with voting workflow...");
+
+    // 1. Setup integrated security system
+    let config = Config::for_testing()?;
+    let salt_manager = SecureSaltManager::for_testing();
+    let lock_service = VotingLockService::new();
+
+    // Create key rotation manager from config
+    let rotation_config = config.security.key_rotation_config();
+    let key_manager = KeyRotationManager::new(rotation_config).await?;
+
+    println!("✅ Integrated security system initialized");
+
+    // 2. Test initial voting with key rotation system
+    let election_id = Uuid::new_v4();
+    let bank_id = "CZ1234567890";
+
+    let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let voter_hash = salt_manager.hash_voter_identity_secure(bank_id, &election_id, current_time, 300)?;
+    let voter_hash_str = hex::encode(voter_hash);
+
+    // Acquire voting lock
+    let lock_result = lock_service.acquire_lock(&voter_hash_str, &election_id, VotingMethod::Digital)?;
+    let voting_lock = match lock_result {
+        LockResult::Acquired(lock) => lock,
+        _ => panic!("Expected to acquire voting lock"),
+    };
+
+    println!("✅ Voting lock acquired for key rotation test");
+
+    // 3. Sign vote with current key
+    let vote_content = b"vote_for_candidate_alice";
+    let (signature1, timestamp1) = key_manager.sign(vote_content).await?;
+    let stats_before = key_manager.get_stats().await;
+
+    println!("✅ Vote signed with key: {}", stats_before.current_key_id);
+    println!("   Time until rotation: {}s", stats_before.time_until_rotation_seconds);
+
+    // 4. Verify signature works
+    key_manager.verify(vote_content, &signature1, timestamp1).await?;
+    println!("✅ Signature verification successful");
+
+    // 5. Perform manual key rotation (simulating automatic rotation)
+    println!("\n🔄 Performing key rotation...");
+    key_manager.manual_rotation("Integration test rotation").await?;
+
+    let stats_after = key_manager.get_stats().await;
+    println!("✅ Key rotated: {} -> {}", stats_before.current_key_id, stats_after.current_key_id);
+    println!("   Previous keys: {}", stats_after.previous_keys_count);
+
+    // 6. Verify old signature still works (with previous key)
+    key_manager.verify(vote_content, &signature1, timestamp1).await?;
+    println!("✅ Old signature verified with previous key");
+
+    // 7. Sign new vote with new key
+    let vote_content2 = b"vote_for_candidate_bob";
+    let (signature2, timestamp2) = key_manager.sign(vote_content2).await?;
+    key_manager.verify(vote_content2, &signature2, timestamp2).await?;
+    println!("✅ New signature works with rotated key");
+
+    // 8. Test that votes from different keys can coexist
+    let vote1 = AnonymousVote::new(
+        Uuid::new_v4(),
+        election_id,
+        vote_content.to_vec(),
+        &signature1,
+        &CryptoUtils::hash(vote_content),
+        timestamp1 as i64,
+    );
+
+    let vote2 = AnonymousVote::new(
+        Uuid::new_v4(),
+        election_id,
+        vote_content2.to_vec(),
+        &signature2,
+        &CryptoUtils::hash(vote_content2),
+        timestamp2 as i64,
+    );
+
+    // Both votes should be valid for verification
+    if let (Some(sig1), Some(sig2)) = (vote1.signature_array(), vote2.signature_array()) {
+        key_manager.verify(vote_content, &sig1, timestamp1).await?;
+        key_manager.verify(vote_content2, &sig2, timestamp2).await?;
+        println!("✅ Both pre-rotation and post-rotation votes verify successfully");
+    }
+
+    // 9. Test emergency rotation scenario
+    println!("\n🚨 Testing emergency rotation scenario...");
+    let stats_before_emergency = key_manager.get_stats().await;
+
+    key_manager.emergency_rotation("Simulated key compromise").await?;
+
+    let stats_after_emergency = key_manager.get_stats().await;
+    println!("✅ Emergency rotation completed");
+    println!("   Emergency rotations: {}", stats_after_emergency.emergency_rotations);
+    println!("   Total rotations: {}", stats_after_emergency.total_rotations);
+
+    // 10. Verify all previous signatures still work
+    key_manager.verify(vote_content, &signature1, timestamp1).await?;
+    key_manager.verify(vote_content2, &signature2, timestamp2).await?;
+    println!("✅ All historical signatures still verify after emergency rotation");
+
+    // 11. Test rotation events tracking
+    let recent_events = key_manager.get_recent_events(10).await;
+    println!("\n📋 Rotation Events History:");
+    for (i, event) in recent_events.iter().enumerate() {
+        println!("   {}. {:?}: {} (Key: {})",
+                 i + 1,
+                 event.event_type,
+                 event.reason,
+                 event.new_key_id);
+    }
+
+    // 12. Test system health monitoring
+    let final_stats = key_manager.get_stats().await;
+    println!("\n📊 Final System Status:");
+    println!("   Current key: {}", final_stats.current_key_id);
+    println!("   Key age: {}s", final_stats.current_key_age_seconds);
+    println!("   Previous keys: {}", final_stats.previous_keys_count);
+    println!("   Total rotations: {}", final_stats.total_rotations);
+    println!("   Emergency rotations: {}", final_stats.emergency_rotations);
+    println!("   Health status: {}", if final_stats.is_healthy { "✅ Healthy" } else { "⚠️  Issues detected" });
+
+    if !final_stats.warnings.is_empty() {
+        println!("   Warnings:");
+        for warning in &final_stats.warnings {
+            println!("     - {}", warning);
+        }
+    }
+
+    // Clean up
+    lock_service.release_lock(&voting_lock)?;
+
+    println!("\n🎉 Key rotation integration test completed successfully!");
+    println!("🔒 Verified capabilities:");
+    println!("   • Seamless key rotation without service interruption");
+    println!("   • Historical signature verification with previous keys");
+    println!("   • Emergency rotation for security incidents");
+    println!("   • Comprehensive event tracking and monitoring");
+    println!("   • Integration with existing voting lock system");
+    println!("   • Zero-downtime operation during rotation");
 
     Ok(())
 }

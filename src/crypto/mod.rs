@@ -2,6 +2,7 @@
 
 pub mod secure;
 pub mod voting_lock;
+pub mod key_rotation;
 
 use crate::{Result, crypto_error};
 use blake3::Hasher;
