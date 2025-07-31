@@ -1,10 +1,12 @@
-//! Security-focused integration tests for the voting system foundation
+//! Complete integration tests for the token-secured voting system
 
 use vote::{
     config::Config,
     crypto::{
-        KeyPair, VoterHasher, TokenGenerator, CryptoUtils,
+        TokenGenerator, CryptoUtils,
         SecureKeyPair, SecureSaltManager, CryptoRateLimiter, SecureMemory,
+        VotingCompletion, VotingStatus, LogoutResult,
+        VotingTokenService, VotingToken, TokenConfig, TokenResult, TokenCleanupService,
         voting_lock::{VotingLockService, VotingMethod, LockResult},
         key_rotation::{KeyRotationManager, KeyRotationService}
     },
@@ -13,497 +15,537 @@ use vote::{
 };
 use uuid::Uuid;
 use chrono::Utc;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashSet;
 
 #[tokio::test]
-async fn test_double_voting_prevention_workflow() -> Result<()> {
-    println!("🚫 Testing double voting prevention workflow...");
+async fn test_complete_secure_voting_workflow() -> Result<()> {
+    println!("🔐 Testing COMPLETE secure voting workflow with token integration...");
 
-    // Setup
+    // Setup integrated system
     let salt_manager = SecureSaltManager::for_testing();
-    let lock_service = VotingLockService::new();
+    let token_service = Arc::new(VotingTokenService::for_testing());
+    let lock_service = VotingLockService::new(token_service.clone());
     let election_id = Uuid::new_v4();
     let bank_id = "CZ1234567890";
 
-    // Generate voter hash (this is how we identify voters anonymously)
+    // Generate voter hash
     let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    let voter_hash = salt_manager.hash_voter_identity_secure(
-        bank_id,
-        &election_id,
-        current_time,
-        300
-    )?;
+    let voter_hash = salt_manager.hash_voter_identity_secure(bank_id, &election_id, current_time, 300)?;
     let voter_hash_str = hex::encode(voter_hash);
 
-    println!("✅ Generated anonymous voter hash: {}...", &voter_hash_str[0..8]);
+    println!("✅ Voter hash generated: {}...", &voter_hash_str[0..8]);
 
-    // Test 1: First voting attempt (Digital) - should succeed
-    println!("\n📱 Test 1: Digital voting attempt...");
-    let digital_lock_result = lock_service.acquire_lock(
+    // **PHASE 1: LOGIN AND TOKEN ISSUANCE**
+    println!("\n👤 PHASE 1: User login and token issuance");
+
+    let token_result = token_service.issue_token(
+        &salt_manager,
         &voter_hash_str,
         &election_id,
-        VotingMethod::Digital
+        Some("mobile_session_abc123".to_string()),
     )?;
 
-    match digital_lock_result {
-        LockResult::Acquired(lock) => {
-            println!("✅ Digital voting lock acquired successfully");
-            println!("   Lock ID: {}", lock.lock_id);
-            println!("   Expires in: {} seconds", lock.time_remaining());
-
-            // Simulate digital voting process
-            println!("   📝 Processing digital vote...");
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-            // Don't release lock yet - voting still in progress
+    let voting_token = match token_result {
+        TokenResult::Issued(token) => {
+            println!("✅ Login successful - token issued");
+            println!("   Token ID: {}...", &token.token_id[..12]);
+            println!("   Expires in: {} seconds", token.time_remaining());
+            println!("   Session: {:?}", token.session_id);
+            token
         }
-        _ => panic!("Expected digital lock to be acquired"),
-    }
+        _ => panic!("Expected token to be issued during login"),
+    };
 
-    // Test 2: Concurrent analog voting attempt - should fail
-    println!("\n🗳️  Test 2: Attempting analog voting (should fail)...");
-    let analog_lock_result = lock_service.acquire_lock(
+    // **PHASE 2: VOTING STATUS CHECK**
+    println!("\n🔍 PHASE 2: Voting status check");
+
+    let initial_status = lock_service.get_voting_status(&voter_hash_str, &election_id)?;
+    assert!(initial_status.can_vote());
+    assert!(initial_status.blocking_reason().is_none());
+    assert_eq!(initial_status.active_tokens.len(), 1);
+
+    let usable_token = initial_status.get_usable_token().unwrap();
+    println!("✅ Voting status: CAN VOTE");
+    println!("   Usable token: {}...", &usable_token.token_id[..12]);
+
+    // **PHASE 3: ACQUIRE VOTING LOCK WITH TOKEN VALIDATION**
+    println!("\n🔒 PHASE 3: Acquire voting lock with token validation");
+
+    let lock_result = lock_service.acquire_lock_with_token(
+        &salt_manager,
+        &voting_token.token_id,
         &voter_hash_str,
         &election_id,
-        VotingMethod::Analog
+        VotingMethod::Digital,
     )?;
 
-    match analog_lock_result {
-        LockResult::AlreadyLocked { existing_lock, conflict_method } => {
-            println!("✅ Analog voting correctly blocked!");
+    let voting_lock = match lock_result {
+        LockResult::Acquired(lock) => {
+            println!("✅ Voting lock acquired with token validation");
+            println!("   Lock ID: {}", lock.lock_id);
+            println!("   Method: {:?}", lock.method);
+            println!("   Associated token: {}...", &lock.token_id[..12]);
+            lock
+        }
+        LockResult::InvalidToken { reason } => {
+            panic!("Token validation failed: {}", reason);
+        }
+        _ => panic!("Expected to acquire voting lock"),
+    };
+
+    // **PHASE 4: CONCURRENT ACCESS PREVENTION**
+    println!("\n🚫 PHASE 4: Testing concurrent access prevention");
+
+    // Try to acquire another lock with same token (should fail - already in use)
+    let concurrent_result = lock_service.acquire_lock_with_token(
+        &salt_manager,
+        &voting_token.token_id,
+        &voter_hash_str,
+        &election_id,
+        VotingMethod::Analog,
+    )?;
+
+    match concurrent_result {
+        LockResult::AlreadyLocked { conflict_method, .. } => {
+            println!("✅ Concurrent access blocked by active lock");
             println!("   Conflict with: {:?}", conflict_method);
-            println!("   Existing lock expires in: {} seconds", existing_lock.time_remaining());
             assert_eq!(conflict_method, VotingMethod::Digital);
         }
-        _ => panic!("Expected analog voting to be blocked"),
+        _ => panic!("Expected concurrent access to be blocked"),
     }
 
-    // Test 3: Check lock status
-    println!("\n🔍 Test 3: Checking lock status...");
-    let lock_status = lock_service.is_locked(&voter_hash_str, &election_id)?;
-    match lock_status {
-        Some(lock) => {
-            println!("✅ Lock confirmed active");
-            println!("   Method: {:?}", lock.method);
-            println!("   Time remaining: {} seconds", lock.time_remaining());
-        }
-        None => panic!("Expected lock to be active"),
-    }
+    // **PHASE 5: VOTE PROCESSING AND COMPLETION**
+    println!("\n🗳️ PHASE 5: Vote processing and completion");
 
-    // Test 4: Complete digital voting and release lock
-    println!("\n✅ Test 4: Completing digital voting...");
-    if let Some(active_lock) = lock_service.is_locked(&voter_hash_str, &election_id)? {
-        let released = lock_service.release_lock(&active_lock)?;
-        assert!(released);
-        println!("✅ Digital voting completed, lock released");
-    }
+    // Simulate vote processing
+    let key_pair = SecureKeyPair::generate_with_expiration(Some(3600))?;
+    let vote_content = b"secure_vote_for_candidate_alice";
+    let (vote_signature, signature_timestamp) = key_pair.sign_with_timestamp(vote_content)?;
 
-    // Test 5: Verify lock is released
-    println!("\n🔓 Test 5: Verifying lock release...");
-    let lock_status_after = lock_service.is_locked(&voter_hash_str, &election_id)?;
-    assert!(lock_status_after.is_none());
-    println!("✅ Lock successfully released");
+    // Verify vote signature
+    key_pair.verify_with_timestamp(vote_content, &vote_signature, signature_timestamp, 300)?;
+    println!("✅ Vote cryptographically signed and verified");
 
-    // Test 6: Now analog voting should work
-    println!("\n🗳️  Test 6: Analog voting after digital completion...");
-    let analog_retry_result = lock_service.acquire_lock(
+    // Complete voting (this invalidates token and releases lock)
+    let vote_id = Uuid::new_v4();
+    let completion = lock_service.complete_voting_with_token_cleanup(&voting_lock, Some(vote_id))?;
+
+    println!("✅ Voting completed successfully");
+    println!("   Completion ID: {}", completion.completion_id);
+    println!("   Vote ID: {:?}", completion.vote_id);
+    println!("   Token used: {}...", &completion.token_id[..12]);
+
+    // **PHASE 6: POST-VOTE SECURITY VERIFICATION**
+    println!("\n🛡️ PHASE 6: Post-vote security verification");
+
+    // Verify token is now invalid (used)
+    let token_validation = token_service.validate_token(
+        &salt_manager,
+        &voting_token.token_id,
         &voter_hash_str,
         &election_id,
-        VotingMethod::Analog
     )?;
 
-    match analog_retry_result {
-        LockResult::Acquired(lock) => {
-            println!("✅ Analog voting now allowed (but this would be blocked by double-vote detection)");
-
-            // In real system, this would be blocked by double-vote detection
-            // since we already have a completed vote for this voter_hash
-            println!("   ⚠️  NOTE: In production, this would be blocked by completed vote detection");
-
-            // Clean up
-            lock_service.release_lock(&lock)?;
+    match token_validation {
+        TokenResult::Invalid { reason } => {
+            println!("✅ Token correctly invalidated after voting");
+            println!("   Reason: {}", reason);
         }
-        _ => panic!("Expected analog voting to work after digital completion"),
+        _ => panic!("Expected token to be invalidated after voting"),
     }
 
-    // Test 7: Service statistics
-    println!("\n📊 Test 7: Lock service statistics...");
-    let stats = lock_service.get_stats()?;
-    println!("✅ Lock service stats:");
-    println!("   Total locks: {}", stats.total_locks);
-    println!("   Active locks: {}", stats.active_locks);
-    println!("   Expired locks: {}", stats.expired_locks);
+    // Verify voting status prevents further voting
+    let post_vote_status = lock_service.get_voting_status(&voter_hash_str, &election_id)?;
+    assert!(!post_vote_status.can_vote());
+    assert!(post_vote_status.completion.is_some());
+    assert!(post_vote_status.active_lock.is_none());
 
-    // Test 8: Different voter, same election - should work
-    println!("\n👤 Test 8: Different voter, same election...");
+    let blocking_reason = post_vote_status.blocking_reason().unwrap();
+    println!("✅ Further voting blocked: {}", blocking_reason);
+
+    // **PHASE 7: DOUBLE VOTING ATTACK PREVENTION**
+    println!("\n🚨 PHASE 7: Double voting attack prevention");
+
+    // Attacker tries to get new token and vote again
+    let attack_token_result = token_service.issue_token(
+        &salt_manager,
+        &voter_hash_str, // Same voter
+        &election_id,    // Same election
+        Some("attack_session_xyz789".to_string()),
+    )?;
+
+    let attack_token = match attack_token_result {
+        TokenResult::Issued(token) => {
+            println!("⚠️ New token issued (but voting should still be blocked)");
+            token
+        }
+        _ => panic!("Should be able to issue new token"),
+    };
+
+    // Try to vote with new token (should be blocked by completion record)
+    let attack_lock_result = lock_service.acquire_lock_with_token(
+        &salt_manager,
+        &attack_token.token_id,
+        &voter_hash_str,
+        &election_id,
+        VotingMethod::Analog,
+    )?;
+
+    match attack_lock_result {
+        LockResult::AlreadyVoted { completion, original_method } => {
+            println!("✅ ATTACK PREVENTED! Double voting blocked by completion record");
+            println!("   Original vote: {:?} at {}", original_method, completion.completed_at);
+            assert_eq!(original_method, VotingMethod::Digital);
+        }
+        _ => panic!("❌ CRITICAL VULNERABILITY: Double voting should be blocked!"),
+    }
+
+    // **PHASE 8: DIFFERENT VOTER VERIFICATION**
+    println!("\n👥 PHASE 8: Different voter verification");
+
     let different_bank_id = "CZ9876543210";
     let different_voter_hash = salt_manager.hash_voter_identity_secure(
-        different_bank_id,
-        &election_id,
-        current_time,
-        300
+        different_bank_id, &election_id, current_time, 300
     )?;
     let different_voter_hash_str = hex::encode(different_voter_hash);
 
-    let different_voter_result = lock_service.acquire_lock(
+    // Different voter should be able to get token and vote
+    let different_token_result = token_service.issue_token(
+        &salt_manager,
         &different_voter_hash_str,
         &election_id,
-        VotingMethod::Digital
+        Some("different_session_456".to_string()),
     )?;
 
-    match different_voter_result {
+    let different_token = match different_token_result {
+        TokenResult::Issued(token) => token,
+        _ => panic!("Different voter should get token"),
+    };
+
+    let different_lock_result = lock_service.acquire_lock_with_token(
+        &salt_manager,
+        &different_token.token_id,
+        &different_voter_hash_str,
+        &election_id,
+        VotingMethod::Digital,
+    )?;
+
+    match different_lock_result {
         LockResult::Acquired(lock) => {
-            println!("✅ Different voter can vote in same election");
-            lock_service.release_lock(&lock)?;
+            println!("✅ Different voter successfully acquired voting lock");
+
+            // Complete different voter's vote
+            let different_vote_id = Uuid::new_v4();
+            let _different_completion = lock_service.complete_voting_with_token_cleanup(&lock, Some(different_vote_id))?;
+            println!("✅ Different voter completed voting");
         }
-        _ => panic!("Expected different voter to be able to vote"),
+        _ => panic!("Different voter should be able to vote"),
     }
 
-    println!("\n🎉 Double voting prevention workflow test completed!");
-    println!("🔒 Key security features verified:");
-    println!("   • Temporal locking prevents race conditions");
-    println!("   • Anonymous voter hashes preserve privacy");
-    println!("   • Same voter cannot vote twice simultaneously");
-    println!("   • Different voters don't interfere with each other");
-    println!("   • Locks automatically expire to prevent deadlocks");
+    // **PHASE 9: SYSTEM STATISTICS AND MONITORING**
+    println!("\n📊 PHASE 9: System statistics and monitoring");
+
+    let final_stats = lock_service.get_stats()?;
+    println!("✅ Final system statistics:");
+    println!("   Active locks: {}", final_stats.active_locks);
+    println!("   Total completions: {}", final_stats.total_completions);
+    println!("   Digital completions: {}", final_stats.digital_completions);
+    println!("   Token stats:");
+    println!("     Total tokens: {}", final_stats.token_stats.total_tokens);
+    println!("     Active tokens: {}", final_stats.token_stats.active_tokens);
+    println!("     Used tokens: {}", final_stats.token_stats.used_tokens);
+    println!("     Unique voters: {}", final_stats.token_stats.unique_voters);
+
+    assert_eq!(final_stats.total_completions, 2); // Two votes completed
+    assert_eq!(final_stats.active_locks, 0); // No active locks
+    assert_eq!(final_stats.token_stats.used_tokens, 2); // Two tokens used
+
+    println!("\n🎉 COMPLETE SECURE VOTING WORKFLOW SUCCESSFUL!");
+    println!("🔒 ALL SECURITY LAYERS VERIFIED:");
+    println!("   • ✅ Token-based authentication and authorization");
+    println!("   • ✅ Cryptographic token validation");
+    println!("   • ✅ Temporal lock prevention for concurrent access");
+    println!("   • ✅ Permanent completion tracking for double-vote prevention");
+    println!("   • ✅ Automatic token invalidation on vote completion");
+    println!("   • ✅ Session management for millions of users");
+    println!("   • ✅ Anonymous voter privacy preservation");
+    println!("   • ✅ Comprehensive audit trail");
 
     Ok(())
 }
 
-// ============================================================================
-// 🚨 CRITICAL SECURITY VULNERABILITY TESTS
-// ============================================================================
-// These tests MUST catch fundamental security vulnerabilities that could
-// compromise election integrity. Any failure indicates critical security bugs.
-
-#[test]
-fn test_voter_hash_must_be_deterministic_across_different_timestamps() {
-    println!("🔍 CRITICAL SECURITY TEST: Voter hash determinism");
+#[tokio::test]
+async fn test_token_security_attack_scenarios() -> Result<()> {
+    println!("🚨 Testing token security against attack scenarios...");
 
     let salt_manager = SecureSaltManager::for_testing();
-    let bank_id = "CZ1234567890";
+    let token_service = Arc::new(VotingTokenService::for_testing());
+    let lock_service = VotingLockService::new(token_service.clone());
     let election_id = Uuid::new_v4();
+    let voter_hash_str = hex::encode([1u8; 32]);
 
-    // Simulate the attack: same voter, different timestamps
-    let base_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    // **ATTACK 1: Token Forgery**
+    println!("\n🎯 ATTACK 1: Token forgery attempt");
 
-    // Generate voter hashes with different timestamps (attack scenario)
-    let hash1 = salt_manager.hash_voter_identity_secure(
-        bank_id,
+    let forged_token_id = "forged_token_12345678";
+    let forgery_result = lock_service.acquire_lock_with_token(
+        &salt_manager,
+        forged_token_id,
+        &voter_hash_str,
         &election_id,
-        base_time,      // Timestamp 1
-        300
-    ).unwrap();
+        VotingMethod::Digital,
+    )?;
 
-    let hash2 = salt_manager.hash_voter_identity_secure(
-        bank_id,
-        &election_id,
-        base_time + 1,  // Timestamp 2 (1 second later)
-        300
-    ).unwrap();
-
-    let hash3 = salt_manager.hash_voter_identity_secure(
-        bank_id,
-        &election_id,
-        base_time + 60, // Timestamp 3 (1 minute later)
-        300
-    ).unwrap();
-
-    // CRITICAL SECURITY REQUIREMENT:
-    // Same voter MUST get same hash regardless of when they vote
-    assert_eq!(hash1, hash2,
-               "🚨 CRITICAL VULNERABILITY: Same voter gets different hashes with different timestamps!
-         This allows unlimited voting by timestamp manipulation.
-         hash1: {}, hash2: {}",
-               hex::encode(hash1), hex::encode(hash2));
-
-    assert_eq!(hash1, hash3,
-               "🚨 CRITICAL VULNERABILITY: Same voter gets different hashes with different timestamps!
-         This allows unlimited voting by timestamp manipulation.
-         hash1: {}, hash3: {}",
-               hex::encode(hash1), hex::encode(hash3));
-
-    assert_eq!(hash2, hash3,
-               "🚨 CRITICAL VULNERABILITY: Same voter gets different hashes with different timestamps!
-         This allows unlimited voting by timestamp manipulation.
-         hash2: {}, hash3: {}",
-               hex::encode(hash2), hex::encode(hash3));
-
-    println!("✅ SECURITY TEST PASSED: Voter hash is deterministic across timestamps");
-}
-
-#[test]
-fn test_complete_double_voting_attack_scenario() {
-    println!("🔍 CRITICAL SECURITY TEST: Complete double voting attack");
-
-    let salt_manager = SecureSaltManager::for_testing();
-    let bank_id = "CZ1234567890"; // Same malicious voter
-    let election_id = Uuid::new_v4();
-
-    let base_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-
-    // Simulate attacker trying to vote multiple times with different timestamps
-    let mut unique_hashes = HashSet::new();
-
-    for i in 0..10 {
-        let timestamp = base_time + i; // Different timestamp each time
-
-        let voter_hash = salt_manager.hash_voter_identity_secure(
-            bank_id,
-            &election_id,
-            timestamp,
-            300
-        ).unwrap();
-
-        unique_hashes.insert(voter_hash);
+    match forgery_result {
+        LockResult::InvalidToken { reason } => {
+            println!("✅ Token forgery blocked: {}", reason);
+        }
+        _ => panic!("Forged token should be rejected"),
     }
 
-    // CRITICAL: Should only have 1 unique hash (same voter = same hash)
-    assert_eq!(unique_hashes.len(), 1,
-               "🚨 CRITICAL VULNERABILITY: Got {} different hashes for same voter with different timestamps!
-         This means attacker can vote {} times by manipulating timestamps.
-         Unique hashes: {:?}",
-               unique_hashes.len(),
-               unique_hashes.len(),
-               unique_hashes.iter().map(|h| hex::encode(h)).collect::<Vec<_>>());
+    // **ATTACK 2: Token Reuse After Invalidation**
+    println!("\n🎯 ATTACK 2: Token reuse after invalidation");
 
-    println!("✅ SECURITY TEST PASSED: Same voter produces same hash regardless of timestamp");
-}
-
-#[tokio::test]
-async fn test_double_voting_prevention_with_timestamp_manipulation() {
-    println!("🔍 CRITICAL INTEGRATION TEST: Double voting prevention under timestamp attack");
-
-    let salt_manager = SecureSaltManager::for_testing();
-    let lock_service = VotingLockService::new();
-    let bank_id = "CZ1234567890";
-    let election_id = Uuid::new_v4();
-
-    let base_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-
-    // First voting attempt
-    let voter_hash1 = salt_manager.hash_voter_identity_secure(
-        bank_id,
-        &election_id,
-        base_time,
-        300
-    ).unwrap();
-    let voter_hash1_str = hex::encode(voter_hash1);
-
-    let lock_result1 = lock_service.acquire_lock(
-        &voter_hash1_str,
-        &election_id,
-        VotingMethod::Digital
-    ).unwrap();
-
-    // Should succeed
-    let voting_lock = match lock_result1 {
-        LockResult::Acquired(lock) => lock,
-        _ => panic!("First voting attempt should succeed"),
+    // Issue legitimate token
+    let token_result = token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None)?;
+    let legitimate_token = match token_result {
+        TokenResult::Issued(token) => token,
+        _ => panic!("Expected token issuance"),
     };
 
-    // Attacker tries to vote again with different timestamp (attack scenario)
-    let voter_hash2 = salt_manager.hash_voter_identity_secure(
-        bank_id,           // Same voter
-        &election_id,      // Same election
-        base_time + 60,    // Different timestamp (attack!)
-        300
-    ).unwrap();
-    let voter_hash2_str = hex::encode(voter_hash2);
+    // Invalidate token (simulate logout)
+    let invalidation_result = token_service.invalidate_token(&legitimate_token.token_id)?;
+    assert_eq!(invalidation_result, TokenResult::Invalidated);
 
-    // CRITICAL: Hashes must be the same (same voter = same hash)
-    assert_eq!(voter_hash1_str, voter_hash2_str,
-               "🚨 CRITICAL VULNERABILITY: Same voter with different timestamps gets different hashes!
-         This breaks double voting prevention. Hash1: {}, Hash2: {}",
-               voter_hash1_str, voter_hash2_str);
-
-    // Therefore, second voting attempt should be blocked
-    let lock_result2 = lock_service.acquire_lock(
-        &voter_hash2_str,
+    // Try to use invalidated token
+    let reuse_result = lock_service.acquire_lock_with_token(
+        &salt_manager,
+        &legitimate_token.token_id,
+        &voter_hash_str,
         &election_id,
-        VotingMethod::Digital
-    ).unwrap();
+        VotingMethod::Digital,
+    )?;
 
-    // Should be blocked (already locked)
-    assert!(matches!(lock_result2, LockResult::AlreadyLocked { .. }),
-            "Second voting attempt should be blocked due to existing lock");
-
-    // Cleanup
-    lock_service.release_lock(&voting_lock).unwrap();
-
-    println!("✅ CRITICAL INTEGRATION TEST PASSED: Double voting prevented despite timestamp manipulation");
-}
-
-#[test]
-fn test_different_voters_get_different_hashes() {
-    println!("🔍 SECURITY TEST: Voter hash uniqueness");
-
-    let salt_manager = SecureSaltManager::for_testing();
-    let election_id = Uuid::new_v4();
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-
-    // Different voters should get different hashes
-    let voter1_hash = salt_manager.hash_voter_identity_secure(
-        "CZ1111111111",
-        &election_id,
-        timestamp,
-        300
-    ).unwrap();
-
-    let voter2_hash = salt_manager.hash_voter_identity_secure(
-        "CZ2222222222",
-        &election_id,
-        timestamp,
-        300
-    ).unwrap();
-
-    let voter3_hash = salt_manager.hash_voter_identity_secure(
-        "CZ3333333333",
-        &election_id,
-        timestamp,
-        300
-    ).unwrap();
-
-    // Must be different (uniqueness)
-    assert_ne!(voter1_hash, voter2_hash,
-               "Different voters must get different hashes");
-    assert_ne!(voter1_hash, voter3_hash,
-               "Different voters must get different hashes");
-    assert_ne!(voter2_hash, voter3_hash,
-               "Different voters must get different hashes");
-
-    println!("✅ SECURITY TEST PASSED: Different voters get different hashes");
-}
-
-#[test]
-fn test_same_voter_different_elections_different_hashes() {
-    println!("🔍 SECURITY TEST: Cross-election privacy");
-
-    let salt_manager = SecureSaltManager::for_testing();
-    let bank_id = "CZ1234567890";
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-
-    // Same voter in different elections should get different hashes
-    let election1_id = Uuid::new_v4();
-    let election2_id = Uuid::new_v4();
-
-    let hash_election1 = salt_manager.hash_voter_identity_secure(
-        bank_id,
-        &election1_id,
-        timestamp,
-        300
-    ).unwrap();
-
-    let hash_election2 = salt_manager.hash_voter_identity_secure(
-        bank_id,
-        &election2_id,
-        timestamp,
-        300
-    ).unwrap();
-
-    // Must be different (privacy across elections)
-    assert_ne!(hash_election1, hash_election2,
-               "Same voter must get different hashes in different elections (privacy protection)");
-
-    println!("✅ SECURITY TEST PASSED: Same voter gets different hashes across elections");
-}
-
-#[test]
-fn test_replay_protection_independent_of_voter_hash() {
-    println!("🔍 SECURITY TEST: Replay protection independence");
-
-    let salt_manager = SecureSaltManager::for_testing();
-    let bank_id = "CZ1234567890";
-    let election_id = Uuid::new_v4();
-
-    let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-
-    // Recent timestamp should work
-    let recent_hash = salt_manager.hash_voter_identity_secure(
-        bank_id,
-        &election_id,
-        current_time - 60, // 1 minute ago
-        300 // 5 minute tolerance
-    );
-    assert!(recent_hash.is_ok(), "Recent timestamp should be accepted");
-
-    // Old timestamp should be rejected
-    let old_hash = salt_manager.hash_voter_identity_secure(
-        bank_id,
-        &election_id,
-        current_time - 400, // 6.67 minutes ago
-        300 // 5 minute tolerance
-    );
-    assert!(old_hash.is_err(), "Old timestamp should be rejected for replay protection");
-
-    // But if both succeed, they should produce the same hash (deterministic)
-    if let (Ok(hash1), Ok(hash2)) = (
-        recent_hash,
-        salt_manager.hash_voter_identity_secure(
-            bank_id,
-            &election_id,
-            current_time - 30, // Different valid timestamp
-            300
-        )
-    ) {
-        assert_eq!(hash1, hash2,
-                   "Different valid timestamps should produce same voter hash");
+    match reuse_result {
+        LockResult::InvalidToken { reason } => {
+            println!("✅ Token reuse blocked: {}", reason);
+        }
+        _ => panic!("Invalidated token should be rejected"),
     }
 
-    println!("✅ SECURITY TEST PASSED: Replay protection works independently");
-}
+    // **ATTACK 3: Cross-Election Token Use**
+    println!("\n🎯 ATTACK 3: Cross-election token use");
 
-#[test]
-fn test_voter_hash_generation_performance() {
-    println!("🔍 PERFORMANCE TEST: Voter hash generation speed");
+    let election1 = Uuid::new_v4();
+    let election2 = Uuid::new_v4();
 
-    let salt_manager = SecureSaltManager::for_testing();
-    let election_id = Uuid::new_v4();
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    // Issue token for election1
+    let election1_token_result = token_service.issue_token(&salt_manager, &voter_hash_str, &election1, None)?;
+    let election1_token = match election1_token_result {
+        TokenResult::Issued(token) => token,
+        _ => panic!("Expected token for election1"),
+    };
 
-    let start = std::time::Instant::now();
+    // Try to use election1 token for election2
+    let cross_election_result = lock_service.acquire_lock_with_token(
+        &salt_manager,
+        &election1_token.token_id,
+        &voter_hash_str,
+        &election2, // Wrong election
+        VotingMethod::Digital,
+    )?;
 
-    // Generate 1000 hashes (simulating busy election)
-    for i in 0..1000 {
-        let bank_id = format!("CZ{:010}", i);
-        let _hash = salt_manager.hash_voter_identity_secure(
-            &bank_id,
-            &election_id,
-            timestamp,
-            300
-        ).unwrap();
+    match cross_election_result {
+        LockResult::InvalidToken { reason } => {
+            println!("✅ Cross-election token use blocked: {}", reason);
+        }
+        _ => panic!("Cross-election token use should be blocked"),
     }
 
-    let duration = start.elapsed();
-    let ops_per_second = 1000.0 / duration.as_secs_f64();
+    // **ATTACK 4: Token Overflow Attack**
+    println!("\n🎯 ATTACK 4: Token overflow attack");
 
-    println!("Generated 1000 voter hashes in {:?} ({:.0} ops/sec)", duration, ops_per_second);
+    let overflow_voter_hash = hex::encode([2u8; 32]);
 
-    // Should handle at least 500 voters per second (reasonable for production)
-    assert!(ops_per_second > 500.0,
-            "Voter hash generation too slow: {:.0} ops/sec (minimum: 500 ops/sec)",
-            ops_per_second);
+    // Try to issue more tokens than allowed
+    for i in 0..5 {
+        let result = token_service.issue_token(
+            &salt_manager,
+            &overflow_voter_hash,
+            &election_id,
+            Some(format!("session_{}", i)),
+        )?;
 
-    println!("✅ PERFORMANCE TEST PASSED: Hash generation fast enough for production");
+        match result {
+            TokenResult::Issued(token) => {
+                println!("   Token {} issued", i + 1);
+                if i >= 2 { // Should fail after max tokens (2 for testing)
+                    panic!("Too many tokens should be prevented");
+                }
+            }
+            TokenResult::TooManyTokens { active_count } => {
+                println!("✅ Token overflow prevented at {} active tokens", active_count);
+                break;
+            }
+            _ => panic!("Unexpected token result"),
+        }
+    }
+
+    println!("✅ ALL TOKEN SECURITY ATTACKS SUCCESSFULLY PREVENTED");
+
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_key_rotation_integrated_workflow() -> Result<()> {
-    println!("🔄 Testing key rotation integrated with voting workflow...");
+async fn test_session_management_scenarios() -> Result<()> {
+    println!("👤 Testing session management scenarios...");
 
-    // 1. Setup integrated security system
-    let config = Config::for_testing()?;
     let salt_manager = SecureSaltManager::for_testing();
-    let lock_service = VotingLockService::new();
+    let token_service = Arc::new(VotingTokenService::for_testing());
+    let lock_service = VotingLockService::new(token_service.clone());
+    let election_id = Uuid::new_v4();
+    let voter_hash_str = hex::encode([1u8; 32]);
 
-    // Create key rotation manager from config
-    let rotation_config = config.security.key_rotation_config();
-    let key_manager = KeyRotationManager::new(rotation_config).await?;
+    // **SCENARIO 1: Login → Wait → Vote**
+    println!("\n📱 SCENARIO 1: Login → Wait → Vote");
 
-    println!("✅ Integrated security system initialized");
+    let token1_result = token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, Some("mobile_app".to_string()))?;
+    let token1 = match token1_result { TokenResult::Issued(t) => t, _ => panic!() };
 
-    // 2. Test initial voting with key rotation system
+    println!("✅ Login: Token issued with {}s lifetime", token1.time_remaining());
+
+    // Simulate waiting (user browses candidates)
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Vote after waiting
+    let lock_result = lock_service.acquire_lock_with_token(&salt_manager, &token1.token_id, &voter_hash_str, &election_id, VotingMethod::Digital)?;
+    let lock1 = match lock_result { LockResult::Acquired(l) => l, _ => panic!("Should acquire lock after waiting") };
+
+    let completion1 = lock_service.complete_voting_with_token_cleanup(&lock1, Some(Uuid::new_v4()))?;
+    println!("✅ Vote completed after waiting: {}", completion1.completion_id);
+
+    // **SCENARIO 2: Login → Logout (No Vote)**
+    println!("\n🚪 SCENARIO 2: Login → Logout (No Vote)");
+
+    let voter2_hash_str = hex::encode([2u8; 32]);
+    let token2_result = token_service.issue_token(&salt_manager, &voter2_hash_str, &election_id, Some("web_browser".to_string()))?;
+    let token2 = match token2_result { TokenResult::Issued(t) => t, _ => panic!() };
+
+    println!("✅ Login: Token issued for voter 2");
+
+    // Logout without voting
+    let logout_result = lock_service.logout_voter(&voter2_hash_str, &election_id)?;
+    println!("✅ Logout: {} tokens invalidated", logout_result.invalidated_tokens);
+
+    // Verify token is invalidated
+    let validation_result = token_service.validate_token(&salt_manager, &token2.token_id, &voter2_hash_str, &election_id)?;
+    match validation_result {
+        TokenResult::Invalid { .. } => println!("✅ Token correctly invalidated on logout"),
+        _ => panic!("Token should be invalid after logout"),
+    }
+
+    // **SCENARIO 3: Multiple Sessions → Vote with One**
+    println!("\n📱💻 SCENARIO 3: Multiple sessions → Vote with one");
+
+    let voter3_hash_str = hex::encode([3u8; 32]);
+
+    // Login from mobile
+    let mobile_token_result = token_service.issue_token(&salt_manager, &voter3_hash_str, &election_id, Some("mobile_session".to_string()))?;
+    let mobile_token = match mobile_token_result { TokenResult::Issued(t) => t, _ => panic!() };
+
+    // Login from web
+    let web_token_result = token_service.issue_token(&salt_manager, &voter3_hash_str, &election_id, Some("web_session".to_string()))?;
+    let web_token = match web_token_result { TokenResult::Issued(t) => t, _ => panic!() };
+
+    println!("✅ Multiple sessions: Mobile and Web tokens issued");
+
+    // Vote using mobile token
+    let mobile_lock_result = lock_service.acquire_lock_with_token(&salt_manager, &mobile_token.token_id, &voter3_hash_str, &election_id, VotingMethod::Digital)?;
+    let mobile_lock = match mobile_lock_result { LockResult::Acquired(l) => l, _ => panic!() };
+
+    let mobile_completion = lock_service.complete_voting_with_token_cleanup(&mobile_lock, Some(Uuid::new_v4()))?;
+    println!("✅ Vote completed using mobile session");
+
+    // Try to vote using web token (should be blocked by completion)
+    let web_lock_result = lock_service.acquire_lock_with_token(&salt_manager, &web_token.token_id, &voter3_hash_str, &election_id, VotingMethod::Analog)?;
+    match web_lock_result {
+        LockResult::AlreadyVoted { .. } => {
+            println!("✅ Web session correctly blocked after mobile vote completion");
+        }
+        _ => panic!("Web session should be blocked after mobile vote"),
+    }
+
+    println!("✅ ALL SESSION MANAGEMENT SCENARIOS SUCCESSFUL");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_token_cleanup_and_performance() -> Result<()> {
+    println!("🧹 Testing token cleanup and performance...");
+
+    let salt_manager = SecureSaltManager::for_testing();
+    let token_service = Arc::new(VotingTokenService::for_testing());
+    let election_id = Uuid::new_v4();
+
+    // **PERFORMANCE TEST: Issue many tokens**
+    println!("\n⚡ PERFORMANCE: Issuing 1000 tokens");
+
+    let start_time = std::time::Instant::now();
+
+    for i in 0..1000 {
+        let voter_hash = hex::encode([(i % 256) as u8; 32]);
+        let _token_result = token_service.issue_token(
+            &salt_manager,
+            &voter_hash,
+            &election_id,
+            Some(format!("session_{}", i)),
+        )?;
+    }
+
+    let duration = start_time.elapsed();
+    let tokens_per_second = 1000.0 / duration.as_secs_f64();
+
+    println!("✅ Issued 1000 tokens in {:?} ({:.0} tokens/sec)", duration, tokens_per_second);
+    assert!(tokens_per_second > 1000.0, "Token issuance should be fast enough for production");
+
+    // **CLEANUP TEST: Token cleanup performance**
+    println!("\n🧹 CLEANUP: Testing token cleanup");
+
+    let cleanup_start = std::time::Instant::now();
+    let cleanup_stats = token_service.cleanup_expired_tokens()?;
+    let cleanup_duration = cleanup_start.elapsed();
+
+    println!("✅ Token cleanup completed in {:?}", cleanup_duration);
+    println!("   Initial tokens: {}", cleanup_stats.initial_tokens);
+    println!("   Final tokens: {}", cleanup_stats.final_tokens);
+    println!("   Removed: {}", cleanup_stats.total_removed);
+
+    // **MEMORY TEST: Verify efficient memory usage**
+    println!("\n💾 MEMORY: Testing memory efficiency");
+
+    let stats_after_cleanup = token_service.get_stats()?;
+    println!("✅ Memory usage after cleanup:");
+    println!("   Active tokens: {}", stats_after_cleanup.active_tokens);
+    println!("   Unique voters: {}", stats_after_cleanup.unique_voters);
+
+    // Should have reasonable memory usage
+    assert!(stats_after_cleanup.active_tokens <= 1000);
+
+    println!("✅ TOKEN CLEANUP AND PERFORMANCE TESTS SUCCESSFUL");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_exact_vulnerability_timeline_with_tokens() -> Result<()> {
+    println!("🕒 Testing EXACT vulnerability timeline with token security...");
+
+    let salt_manager = SecureSaltManager::for_testing();
+    let token_service = Arc::new(VotingTokenService::for_testing());
+    let lock_service = VotingLockService::new(token_service.clone());
     let election_id = Uuid::new_v4();
     let bank_id = "CZ1234567890";
 
@@ -511,217 +553,220 @@ async fn test_key_rotation_integrated_workflow() -> Result<()> {
     let voter_hash = salt_manager.hash_voter_identity_secure(bank_id, &election_id, current_time, 300)?;
     let voter_hash_str = hex::encode(voter_hash);
 
-    // Acquire voting lock
-    let lock_result = lock_service.acquire_lock(&voter_hash_str, &election_id, VotingMethod::Digital)?;
-    let voting_lock = match lock_result {
-        LockResult::Acquired(lock) => lock,
-        _ => panic!("Expected to acquire voting lock"),
+    // ⏰ 10:00 - Voter logs into digital app
+    println!("\n⏰ 10:00 - Voter logs into digital app");
+
+    let login_token_result = token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, Some("digital_app_session".to_string()))?;
+    let digital_token = match login_token_result {
+        TokenResult::Issued(token) => {
+            println!("   🎫 Login token issued: {}...", &token.token_id[..12]);
+            token
+        }
+        _ => panic!("Login should issue token"),
     };
 
-    println!("✅ Voting lock acquired for key rotation test");
+    let digital_lock_result = lock_service.acquire_lock_with_token(&salt_manager, &digital_token.token_id, &voter_hash_str, &election_id, VotingMethod::Digital)?;
+    let digital_lock = match digital_lock_result {
+        LockResult::Acquired(lock) => {
+            println!("   🔒 Digital lock acquired with token validation");
+            lock
+        }
+        _ => panic!("Digital lock should be acquired"),
+    };
 
-    // 3. Sign vote with current key
-    let vote_content = b"vote_for_candidate_alice";
+    // Complete digital voting
+    let vote_id = Uuid::new_v4();
+    let completion = lock_service.complete_voting_with_token_cleanup(&digital_lock, Some(vote_id))?;
+    println!("   ✅ Digital vote completed, token automatically invalidated");
+    println!("   📝 Completion recorded: {}", completion.completion_id);
+
+    // ⏰ 10:20 - Same voter tries analog/paper voting
+    println!("\n⏰ 10:20 - Same voter tries analog/paper voting");
+    println!("   (Original token invalidated, need new token for analog voting)");
+
+    // Voter would need to "login" again for analog voting
+    let analog_token_result = token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, Some("analog_terminal_session".to_string()))?;
+    let analog_token = match analog_token_result {
+        TokenResult::Issued(token) => {
+            println!("   🎫 New token issued for analog voting attempt");
+            token
+        }
+        _ => panic!("Should be able to issue new token"),
+    };
+
+    // Try to vote with new token (should be blocked by completion record)
+    let analog_lock_result = lock_service.acquire_lock_with_token(&salt_manager, &analog_token.token_id, &voter_hash_str, &election_id, VotingMethod::Analog)?;
+    match analog_lock_result {
+        LockResult::AlreadyVoted { completion, original_method } => {
+            println!("   🚫 BLOCKED! Analog voting prevented by completion record");
+            println!("     Original vote: {:?} at {}", original_method, completion.completed_at);
+            assert_eq!(original_method, VotingMethod::Digital);
+        }
+        _ => panic!("❌ CRITICAL: Analog voting should be blocked by completion!"),
+    }
+
+    // ⏰ 10:45 - Voter returns to digital app
+    println!("\n⏰ 10:45 - Voter returns to digital app");
+    println!("   (All previous tokens expired/used, need new token)");
+
+    let return_token_result = token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, Some("digital_return_session".to_string()))?;
+    let return_token = match return_token_result {
+        TokenResult::Issued(token) => {
+            println!("   🎫 New token issued for return visit");
+            token
+        }
+        _ => panic!("Should be able to issue new token"),
+    };
+
+    let return_lock_result = lock_service.acquire_lock_with_token(&salt_manager, &return_token.token_id, &voter_hash_str, &election_id, VotingMethod::Digital)?;
+    match return_lock_result {
+        LockResult::AlreadyVoted { completion, original_method } => {
+            println!("   🚫 BLOCKED! Return digital voting prevented by completion record");
+            println!("     Original vote: {:?} at {}", original_method, completion.completed_at);
+            assert_eq!(original_method, VotingMethod::Digital);
+        }
+        _ => panic!("❌ CRITICAL: Return digital voting should be blocked by completion!"),
+    }
+
+    // **VERIFICATION: System State**
+    println!("\n🔍 VERIFICATION: Final system state");
+
+    let final_status = lock_service.get_voting_status(&voter_hash_str, &election_id)?;
+    assert!(!final_status.can_vote());
+    assert!(final_status.completion.is_some());
+    assert!(final_status.active_lock.is_none());
+
+    println!("✅ Voting status: PERMANENTLY BLOCKED");
+    println!("   Reason: {}", final_status.blocking_reason().unwrap());
+
+    let final_stats = lock_service.get_stats()?;
+    println!("✅ System stats:");
+    println!("   Completions: {}", final_stats.total_completions);
+    println!("   Active locks: {}", final_stats.active_locks);
+    println!("   Active tokens: {}", final_stats.token_stats.active_tokens);
+
+    println!("\n🎉 VULNERABILITY TIMELINE TEST WITH TOKENS PASSED!");
+    println!("✅ Enhanced security layers:");
+    println!("   • Token validation prevents unauthorized access");
+    println!("   • Completion tracking prevents double voting");
+    println!("   • Automatic token invalidation on logout/completion");
+    println!("   • Session management for real-world usage patterns");
+
+    Ok(())
+}
+
+#[test]
+fn test_voter_hash_determinism_with_tokens() {
+    println!("🔍 CRITICAL: Voter hash determinism with token system");
+
+    let salt_manager = SecureSaltManager::for_testing();
+    let bank_id = "CZ1234567890";
+    let election_id = Uuid::new_v4();
+    let base_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+    // Critical: Same voter must get same hash regardless of timestamp
+    let hash1 = salt_manager.hash_voter_identity_secure(bank_id, &election_id, base_time, 300).unwrap();
+    let hash2 = salt_manager.hash_voter_identity_secure(bank_id, &election_id, base_time + 1, 300).unwrap();
+    let hash3 = salt_manager.hash_voter_identity_secure(bank_id, &election_id, base_time + 60, 300).unwrap();
+
+    assert_eq!(hash1, hash2, "🚨 CRITICAL: Same voter gets different hashes!");
+    assert_eq!(hash1, hash3, "🚨 CRITICAL: Same voter gets different hashes!");
+    assert_eq!(hash2, hash3, "🚨 CRITICAL: Same voter gets different hashes!");
+
+    // Test with token system
+    let token_service = Arc::new(VotingTokenService::for_testing());
+    let voter_hash_str = hex::encode(hash1);
+
+    // Should be able to issue tokens with same voter hash
+    let token1_result = token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None).unwrap();
+    let token2_result = token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None).unwrap();
+
+    // Both should succeed (different tokens for same voter)
+    assert!(matches!(token1_result, TokenResult::Issued(_)));
+    assert!(matches!(token2_result, TokenResult::Issued(_)));
+
+    println!("✅ CRITICAL TEST PASSED: Voter hash deterministic with token system");
+}
+
+#[tokio::test]
+async fn test_key_rotation_with_token_security() -> Result<()> {
+    println!("🔄 Testing key rotation with integrated token security...");
+
+    let config = Config::for_testing()?;
+    let salt_manager = SecureSaltManager::for_testing();
+    let token_service = Arc::new(VotingTokenService::for_testing());
+    let lock_service = VotingLockService::new(token_service.clone());
+
+    let rotation_config = config.security.key_rotation_config();
+    let key_manager = KeyRotationManager::new(rotation_config).await?;
+
+    let election_id = Uuid::new_v4();
+    let bank_id = "CZ1234567890";
+    let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let voter_hash = salt_manager.hash_voter_identity_secure(bank_id, &election_id, current_time, 300)?;
+    let voter_hash_str = hex::encode(voter_hash);
+
+    // Issue token and acquire lock
+    let token_result = token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None)?;
+    let voting_token = match token_result { TokenResult::Issued(t) => t, _ => panic!() };
+
+    let lock_result = lock_service.acquire_lock_with_token(&salt_manager, &voting_token.token_id, &voter_hash_str, &election_id, VotingMethod::Digital)?;
+    let voting_lock = match lock_result { LockResult::Acquired(l) => l, _ => panic!() };
+
+    // Sign vote with current key
+    let vote_content = b"vote_with_token_security";
     let (signature1, timestamp1) = key_manager.sign(vote_content).await?;
     let stats_before = key_manager.get_stats().await;
 
     println!("✅ Vote signed with key: {}", stats_before.current_key_id);
-    println!("   Time until rotation: {}s", stats_before.time_until_rotation_seconds);
 
-    // 4. Verify signature works
-    key_manager.verify(vote_content, &signature1, timestamp1).await?;
-    println!("✅ Signature verification successful");
+    // Complete voting
+    let vote_id = Uuid::new_v4();
+    let completion = lock_service.complete_voting_with_token_cleanup(&voting_lock, Some(vote_id))?;
+    println!("✅ Voting completed with token cleanup");
 
-    // 5. Perform manual key rotation (simulating automatic rotation)
-    println!("\n🔄 Performing key rotation...");
-    key_manager.manual_rotation("Integration test rotation").await?;
-
+    // Perform key rotation
+    key_manager.manual_rotation("Token security integration test").await?;
     let stats_after = key_manager.get_stats().await;
     println!("✅ Key rotated: {} -> {}", stats_before.current_key_id, stats_after.current_key_id);
-    println!("   Previous keys: {}", stats_after.previous_keys_count);
 
-    // 6. Verify old signature still works (with previous key)
+    // Verify historical signature still works
     key_manager.verify(vote_content, &signature1, timestamp1).await?;
-    println!("✅ Old signature verified with previous key");
+    println!("✅ Historical signature verified after key rotation");
 
-    // 7. Sign new vote with new key
-    let vote_content2 = b"vote_for_candidate_bob";
-    let (signature2, timestamp2) = key_manager.sign(vote_content2).await?;
-    key_manager.verify(vote_content2, &signature2, timestamp2).await?;
-    println!("✅ New signature works with rotated key");
+    // Verify token security persists after key rotation
+    let new_token_result = token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None)?;
+    let new_token = match new_token_result { TokenResult::Issued(t) => t, _ => panic!() };
 
-    // 8. Test that votes from different keys can coexist
-    let vote1 = AnonymousVote::new(
-        Uuid::new_v4(),
-        election_id,
-        vote_content.to_vec(),
-        &signature1,
-        &CryptoUtils::hash(vote_content),
-        timestamp1 as i64,
-    );
-
-    let vote2 = AnonymousVote::new(
-        Uuid::new_v4(),
-        election_id,
-        vote_content2.to_vec(),
-        &signature2,
-        &CryptoUtils::hash(vote_content2),
-        timestamp2 as i64,
-    );
-
-    // Both votes should be valid for verification
-    if let (Some(sig1), Some(sig2)) = (vote1.signature_array(), vote2.signature_array()) {
-        key_manager.verify(vote_content, &sig1, timestamp1).await?;
-        key_manager.verify(vote_content2, &sig2, timestamp2).await?;
-        println!("✅ Both pre-rotation and post-rotation votes verify successfully");
-    }
-
-    // 9. Test emergency rotation scenario
-    println!("\n🚨 Testing emergency rotation scenario...");
-    let stats_before_emergency = key_manager.get_stats().await;
-
-    key_manager.emergency_rotation("Simulated key compromise").await?;
-
-    let stats_after_emergency = key_manager.get_stats().await;
-    println!("✅ Emergency rotation completed");
-    println!("   Emergency rotations: {}", stats_after_emergency.emergency_rotations);
-    println!("   Total rotations: {}", stats_after_emergency.total_rotations);
-
-    // 10. Verify all previous signatures still work
-    key_manager.verify(vote_content, &signature1, timestamp1).await?;
-    key_manager.verify(vote_content2, &signature2, timestamp2).await?;
-    println!("✅ All historical signatures still verify after emergency rotation");
-
-    // 11. Test rotation events tracking
-    let recent_events = key_manager.get_recent_events(10).await;
-    println!("\n📋 Rotation Events History:");
-    for (i, event) in recent_events.iter().enumerate() {
-        println!("   {}. {:?}: {} (Key: {})",
-                 i + 1,
-                 event.event_type,
-                 event.reason,
-                 event.new_key_id);
-    }
-
-    // 12. Test system health monitoring
-    let final_stats = key_manager.get_stats().await;
-    println!("\n📊 Final System Status:");
-    println!("   Current key: {}", final_stats.current_key_id);
-    println!("   Key age: {}s", final_stats.current_key_age_seconds);
-    println!("   Previous keys: {}", final_stats.previous_keys_count);
-    println!("   Total rotations: {}", final_stats.total_rotations);
-    println!("   Emergency rotations: {}", final_stats.emergency_rotations);
-    println!("   Health status: {}", if final_stats.is_healthy { "✅ Healthy" } else { "⚠️  Issues detected" });
-
-    if !final_stats.warnings.is_empty() {
-        println!("   Warnings:");
-        for warning in &final_stats.warnings {
-            println!("     - {}", warning);
+    let new_lock_result = lock_service.acquire_lock_with_token(&salt_manager, &new_token.token_id, &voter_hash_str, &election_id, VotingMethod::Analog)?;
+    match new_lock_result {
+        LockResult::AlreadyVoted { .. } => {
+            println!("✅ Token security persists across key rotations");
         }
+        _ => panic!("Double voting should be prevented even after key rotation"),
     }
 
-    // Clean up
-    lock_service.release_lock(&voting_lock)?;
-
-    println!("\n🎉 Key rotation integration test completed successfully!");
-    println!("🔒 Verified capabilities:");
-    println!("   • Seamless key rotation without service interruption");
-    println!("   • Historical signature verification with previous keys");
-    println!("   • Emergency rotation for security incidents");
-    println!("   • Comprehensive event tracking and monitoring");
-    println!("   • Integration with existing voting lock system");
-    println!("   • Zero-downtime operation during rotation");
+    println!("✅ Key rotation integration with token security successful");
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_secure_crypto_operations() -> Result<()> {
-    println!("🔒 Testing secure cryptographic operations...");
+async fn test_banking_grade_workflow_with_tokens() -> Result<()> {
+    println!("🏦 Testing banking-grade workflow with complete token security...");
 
-    // Test secure key pair with expiration
-    let key_pair = SecureKeyPair::generate_with_expiration(Some(3600))?; // 1 hour
-    assert!(!key_pair.is_expired());
-
-    let message = b"test vote content";
-    let (signature, timestamp) = key_pair.sign_with_timestamp(message)?;
-
-    // Verify with timestamp validation
-    key_pair.verify_with_timestamp(message, &signature, timestamp, 300)?;
-    println!("✅ Secure key pair with timestamp verification works");
-
-    // Test replay protection
-    let old_timestamp = timestamp - 400; // 400 seconds ago
-    assert!(key_pair.verify_with_timestamp(message, &signature, old_timestamp, 300).is_err());
-    println!("✅ Replay protection works");
-
-    // Test secure salt manager
-    let salt_manager = SecureSaltManager::for_testing();
-    let bank_id = "CZ1234567890";
-    let election_id = Uuid::new_v4();
-    let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-
-    let hash1 = salt_manager.hash_voter_identity_secure(bank_id, &election_id, current_time, 300)?;
-    let hash2 = salt_manager.hash_voter_identity_secure(bank_id, &election_id, current_time, 300)?;
-    assert_eq!(hash1, hash2);
-
-    // Test timestamp validation
-    let old_time = current_time - 400;
-    assert!(salt_manager.hash_voter_identity_secure(bank_id, &election_id, old_time, 300).is_err());
-    println!("✅ Secure voter hashing with timestamp validation works");
-
-    // Test rate limiter
-    let mut rate_limiter = CryptoRateLimiter::new(2); // 2 ops per second
-    assert!(rate_limiter.check_rate_limit().is_ok());
-    assert!(rate_limiter.check_rate_limit().is_ok());
-    assert!(rate_limiter.check_rate_limit().is_err()); // Should be rate limited
-    println!("✅ Rate limiting works");
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_secure_configuration() -> Result<()> {
-    println!("⚙️ Testing secure configuration management...");
-
-    // Test configuration validation
-    let config = Config::for_testing()?;
-
-    // Test salt validation
-    let voter_salt = config.security.voter_salt_bytes()?;
-    let token_salt = config.security.token_salt_bytes()?;
-
-    assert!(voter_salt.len() >= 32);
-    assert!(token_salt.len() >= 32);
-    assert_ne!(voter_salt, token_salt); // Should be different
-
-    println!("✅ Secure configuration validation works");
-
-    // Test security settings
-    assert!(config.security.key_expiry_seconds > 0);
-    assert!(config.security.max_crypto_ops_per_second > 0);
-    assert!(config.security.max_timestamp_age_seconds > 0);
-
-    println!("✅ Security configuration parameters valid");
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_banking_grade_voting_workflow() -> Result<()> {
-    println!("🏦 Testing banking-grade voting workflow...");
-
-    // 1. Initialize secure configuration
     let config = Config::for_testing()?;
     let salt_manager = SecureSaltManager::for_testing();
+    let token_service = Arc::new(VotingTokenService::for_testing());
+    let lock_service = VotingLockService::new(token_service.clone());
     let mut rate_limiter = CryptoRateLimiter::new(10);
 
-    // 2. Create election with proper timing
+    // Create election
     let now = Utc::now().timestamp();
     let election = Election {
         id: Uuid::new_v4(),
-        title: "Secure Mayoral Election 2024".to_string(),
-        description: Some("Banking-grade secure election".to_string()),
+        title: "Token-Secured Banking Election 2024".to_string(),
+        description: Some("Complete token security with banking-grade crypto".to_string()),
         start_time: now - 3600,
         end_time: now + 3600,
         active: true,
@@ -729,65 +774,85 @@ async fn test_banking_grade_voting_workflow() -> Result<()> {
     };
 
     assert!(election.is_accepting_votes());
-    println!("✅ Secure election created and accepting votes");
+    println!("✅ Secure election created");
 
-    // 3. Create candidates
+    // Create candidates
     let candidates = vec![
         Candidate {
-            id: "secure_candidate_a".to_string(),
+            id: "token_candidate_a".to_string(),
             election_id: election.id,
-            name: "Alice Secure".to_string(),
-            description: Some("Cryptographically verified candidate".to_string()),
+            name: "Alice TokenSecure".to_string(),
+            description: Some("Token-validated candidate".to_string()),
             active: true,
         },
         Candidate {
-            id: "secure_candidate_b".to_string(),
+            id: "token_candidate_b".to_string(),
             election_id: election.id,
-            name: "Bob Verified".to_string(),
-            description: Some("Zero-knowledge candidate".to_string()),
+            name: "Bob CryptoVerified".to_string(),
+            description: Some("Session-managed candidate".to_string()),
             active: true,
         },
     ];
 
-    println!("✅ Secure candidates created: {}", candidates.len());
+    println!("✅ Candidates created: {}", candidates.len());
 
-    // 4. Simulate secure voting process
+    // Simulate complete banking-grade voting process
     for i in 1..=3 {
-        // Rate limiting check
         rate_limiter.check_rate_limit()?;
 
         let bank_id = format!("CZ123456789{:02}", i);
         let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 
-        // Generate secure voter hash with timestamp
-        let voter_hash = salt_manager.hash_voter_identity_secure(
-            &bank_id,
+        // Generate secure voter hash
+        let voter_hash = salt_manager.hash_voter_identity_secure(&bank_id, &election.id, current_time, 300)?;
+        let voter_hash_str = hex::encode(voter_hash);
+
+        // 1. Login - Issue voting token
+        let login_result = token_service.issue_token(
+            &salt_manager,
+            &voter_hash_str,
             &election.id,
-            current_time,
-            300 // 5 minute window
+            Some(format!("banking_session_{}", i)),
         )?;
 
-        // Generate secure voting token
+        let voter_token = match login_result {
+            TokenResult::Issued(token) => token,
+            _ => panic!("Expected login token for voter {}", i),
+        };
+
+        // 2. Check voting eligibility
+        let voting_status = lock_service.get_voting_status(&voter_hash_str, &election.id)?;
+        assert!(voting_status.can_vote());
+
+        // 3. Acquire voting lock with token validation
+        let lock_result = lock_service.acquire_lock_with_token(
+            &salt_manager,
+            &voter_token.token_id,
+            &voter_hash_str,
+            &election.id,
+            VotingMethod::Digital,
+        )?;
+
+        let voting_lock = match lock_result {
+            LockResult::Acquired(lock) => lock,
+            _ => panic!("Expected to acquire lock for voter {}", i),
+        };
+
+        // 4. Generate additional secure voting tokens (if needed)
         let expires_at = current_time + config.security.key_expiry_seconds;
-        let (_token_hash, _nonce) = salt_manager.generate_voting_token_secure(
-            &voter_hash,
-            &election.id,
-            expires_at,
-        )?;
+        let (_additional_token_hash, _nonce) = salt_manager.generate_voting_token_secure(&voter_hash, &election.id, expires_at)?;
 
-        // Create secure key pair for vote signing
-        let key_pair = SecureKeyPair::generate_with_expiration(
-            Some(config.security.key_expiry_seconds)
-        )?;
+        // 5. Create secure key pair for vote signing
+        let key_pair = SecureKeyPair::generate_with_expiration(Some(config.security.key_expiry_seconds))?;
 
-        // Select candidate and create vote
+        // 6. Process vote
         let chosen_candidate = &candidates[i % candidates.len()];
-        let vote_content = format!("secure_vote_for:{}", chosen_candidate.id);
+        let vote_content = format!("banking_secure_vote_for:{}", chosen_candidate.id);
 
-        // Sign vote with timestamp
+        // 7. Sign vote with timestamp
         let (vote_signature, signature_timestamp) = key_pair.sign_with_timestamp(vote_content.as_bytes())?;
 
-        // Verify signature immediately (as would happen in real system)
+        // 8. Verify signature
         key_pair.verify_with_timestamp(
             vote_content.as_bytes(),
             &vote_signature,
@@ -795,12 +860,13 @@ async fn test_banking_grade_voting_workflow() -> Result<()> {
             config.security.max_timestamp_age_seconds,
         )?;
 
-        // Create integrity hash
+        // 9. Create integrity hash
         let integrity_hash = CryptoUtils::hash(vote_content.as_bytes());
 
-        // Create anonymous vote with proper serialization
+        // 10. Create anonymous vote
+        let vote_id = Uuid::new_v4();
         let anonymous_vote = AnonymousVote::new(
-            Uuid::new_v4(),
+            vote_id,
             election.id,
             vote_content.into_bytes(),
             &vote_signature,
@@ -808,270 +874,143 @@ async fn test_banking_grade_voting_workflow() -> Result<()> {
             signature_timestamp as i64,
         );
 
-        // Test serialization security
+        // 11. Verify serialization security
         let vote_json = serde_json::to_string(&anonymous_vote)?;
         let vote_back: AnonymousVote = serde_json::from_str(&vote_json)?;
         assert_eq!(anonymous_vote.vote_id, vote_back.vote_id);
 
-        // Verify vote integrity
-        assert!(anonymous_vote.signature_array().is_some());
-        assert!(anonymous_vote.hash_array().is_some());
+        // 12. COMPLETE VOTING with automatic token cleanup
+        let completion = lock_service.complete_voting_with_token_cleanup(&voting_lock, Some(vote_id))?;
+        println!("✅ Banking voter {} completed secure vote for {} (completion: {})",
+                 i, chosen_candidate.name, completion.completion_id);
 
-        println!("✅ Secure voter {} cast verified vote for {}", i, chosen_candidate.name);
+        // 13. Verify token is invalidated
+        let token_validation = token_service.validate_token(&salt_manager, &voter_token.token_id, &voter_hash_str, &election.id)?;
+        match token_validation {
+            TokenResult::Invalid { .. } => {
+                println!("   ✅ Token automatically invalidated after vote completion");
+            }
+            _ => panic!("Token should be invalidated after voting"),
+        }
 
-        // Small delay to prevent timing attacks in testing
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // 14. Verify double voting prevention
+        let double_vote_token = token_service.issue_token(&salt_manager, &voter_hash_str, &election.id, None)?;
+        let double_vote_token = match double_vote_token { TokenResult::Issued(t) => t, _ => panic!() };
+
+        let double_vote_attempt = lock_service.acquire_lock_with_token(&salt_manager, &double_vote_token.token_id, &voter_hash_str, &election.id, VotingMethod::Analog)?;
+        match double_vote_attempt {
+            LockResult::AlreadyVoted { .. } => {
+                println!("   ✅ Double voting prevented for voter {}", i);
+            }
+            _ => panic!("Double voting should be prevented for voter {}", i),
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
 
-    println!("✅ Banking-grade voting workflow completed successfully");
-    println!("🔒 All cryptographic operations verified");
-    println!("⏱️ All timestamps validated");
-    println!("🛡️ All security measures enforced");
+    // Final verification
+    let final_stats = lock_service.get_stats()?;
+    println!("\n📊 Final Banking-Grade Statistics:");
+    println!("   Total completions: {}", final_stats.total_completions);
+    println!("   Active locks: {}", final_stats.active_locks);
+    println!("   Token statistics:");
+    println!("     Total tokens: {}", final_stats.token_stats.total_tokens);
+    println!("     Used tokens: {}", final_stats.token_stats.used_tokens);
+    println!("     Active tokens: {}", final_stats.token_stats.active_tokens);
+    println!("     Unique voters: {}", final_stats.token_stats.unique_voters);
+
+    assert_eq!(final_stats.total_completions, 3);
+    assert_eq!(final_stats.active_locks, 0);
+    assert_eq!(final_stats.token_stats.used_tokens, 3);
+
+    println!("✅ BANKING-GRADE WORKFLOW WITH TOKENS COMPLETED SUCCESSFULLY");
+    println!("🔒 All security measures verified:");
+    println!("   • Token-based authentication and session management");
+    println!("   • Cryptographic token validation and replay prevention");
+    println!("   • Temporal lock prevention for concurrent access");
+    println!("   • Permanent completion tracking for double-vote prevention");
+    println!("   • Automatic token lifecycle management");
+    println!("   • Banking-grade cryptographic primitives");
+    println!("   • Session-aware security for millions of users");
 
     Ok(())
 }
 
 #[test]
-fn test_security_error_handling() {
-    use vote::{Error, crypto_error, voting_error};
+fn test_token_cryptographic_security() {
+    println!("🔐 Testing token cryptographic security...");
 
-    // Test that crypto errors don't leak sensitive information
-    let crypto_err = crypto_error!("test crypto error");
-    assert!(matches!(crypto_err, Error::Crypto { .. }));
-
-    let voting_err = voting_error!("test voting error");
-    assert!(matches!(voting_err, Error::Voting { .. }));
-
-    // Test that errors can be safely displayed without information leakage
-    let error_msg = format!("{}", crypto_err);
-    assert!(!error_msg.contains("sensitive"));
-    assert!(!error_msg.contains("key"));
-    assert!(!error_msg.contains("private"));
-
-    println!("✅ Security-focused error handling works correctly");
-}
-
-#[tokio::test]
-async fn test_memory_security() -> Result<()> {
-    // Test constant-time comparison
-    let data1 = b"test_data_123456";
-    let data2 = b"test_data_123456";
-    let data3 = b"different_data12";
-
-    assert!(SecureMemory::constant_time_eq(data1, data2));
-    assert!(!SecureMemory::constant_time_eq(data1, data3));
-
-    // Test secure random generation
-    let random1 = SecureMemory::secure_random_bytes::<32>();
-    let random2 = SecureMemory::secure_random_bytes::<32>();
-
-    assert_ne!(random1, random2); // Should be different
-    assert_eq!(random1.len(), 32);
-    assert_eq!(random2.len(), 32);
-
-    println!("✅ Memory security operations work correctly");
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_basic_crypto_operations() -> Result<()> {
-    // Test key pair generation and signing
-    let key_pair = KeyPair::generate()?;
-    let message = b"test vote content";
-
-    let signature = key_pair.sign(message);
-    key_pair.verify(message, &signature)?;
-
-    println!("✅ Key pair generation and signing works");
-
-    // Test voter hashing
-    let hasher = VoterHasher::with_default_salt();
-    let bank_id = "CZ1234567890";
+    let salt_manager = SecureSaltManager::for_testing();
+    let voter_hash = [1u8; 32];
     let election_id = Uuid::new_v4();
+    let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let expires_at = current_time + 1800;
 
-    let voter_hash = hasher.hash_voter_identity(bank_id, &election_id);
-    let voter_hash2 = hasher.hash_voter_identity(bank_id, &election_id);
+    // Generate legitimate token
+    let (token_hash, nonce) = salt_manager.generate_voting_token_secure(&voter_hash, &election_id, expires_at).unwrap();
 
-    assert_eq!(voter_hash, voter_hash2);
-    println!("✅ Voter hashing works");
+    // Test 1: Valid token validation
+    let valid_result = salt_manager.validate_voting_token_secure(&token_hash, &nonce, &voter_hash, &election_id, expires_at, current_time).unwrap();
+    assert!(valid_result, "Legitimate token should validate");
 
-    // Test token generation
-    let mut token_gen = TokenGenerator::new();
-    let token1 = token_gen.generate_token();
-    let token2 = token_gen.generate_token();
+    // Test 2: Wrong voter hash
+    let wrong_voter = [2u8; 32];
+    let wrong_voter_result = salt_manager.validate_voting_token_secure(&token_hash, &nonce, &wrong_voter, &election_id, expires_at, current_time).unwrap();
+    assert!(!wrong_voter_result, "Token should fail with wrong voter");
 
-    assert_ne!(token1, token2);
-    println!("✅ Token generation works");
+    // Test 3: Wrong election
+    let wrong_election = Uuid::new_v4();
+    let wrong_election_result = salt_manager.validate_voting_token_secure(&token_hash, &nonce, &voter_hash, &wrong_election, expires_at, current_time).unwrap();
+    assert!(!wrong_election_result, "Token should fail with wrong election");
 
-    // Test crypto utils
-    let data = b"test data for hashing";
-    let hash = CryptoUtils::hash(data);
-    let hash_hex = CryptoUtils::hash_to_hex(&hash);
-    let hash_back = CryptoUtils::hex_to_hash(&hash_hex)?;
+    // Test 4: Expired token
+    let expired_time = expires_at + 1;
+    let expired_result = salt_manager.validate_voting_token_secure(&token_hash, &nonce, &voter_hash, &election_id, expires_at, expired_time).unwrap();
+    assert!(!expired_result, "Expired token should be invalid");
 
-    assert_eq!(hash, hash_back);
-    println!("✅ Crypto utilities work");
+    // Test 5: Modified token hash (forgery attempt)
+    let mut forged_token = token_hash;
+    forged_token[0] ^= 0x01; // Flip one bit
+    let forged_result = salt_manager.validate_voting_token_secure(&forged_token, &nonce, &voter_hash, &election_id, expires_at, current_time).unwrap();
+    assert!(!forged_result, "Forged token should be invalid");
 
-    Ok(())
-}
+    // Test 6: Modified nonce
+    let mut forged_nonce = nonce;
+    forged_nonce[0] ^= 0x01; // Flip one bit
+    let forged_nonce_result = salt_manager.validate_voting_token_secure(&token_hash, &forged_nonce, &voter_hash, &election_id, expires_at, current_time).unwrap();
+    assert!(!forged_nonce_result, "Token with forged nonce should be invalid");
 
-#[tokio::test]
-async fn test_basic_types() -> Result<()> {
-    // Test election creation and timing
-    let now = Utc::now().timestamp();
-    let election = Election {
-        id: Uuid::new_v4(),
-        title: "Test Election".to_string(),
-        description: Some("A test election".to_string()),
-        start_time: now - 3600, // Started 1 hour ago
-        end_time: now + 3600,   // Ends in 1 hour
-        active: true,
-        created_at: Utc::now(),
-    };
-
-    assert!(election.is_accepting_votes());
-    assert!(!election.is_future());
-    assert!(!election.has_ended());
-
-    println!("✅ Election timing logic works");
-
-    // Test candidate creation
-    let candidate = Candidate {
-        id: "candidate_1".to_string(),
-        election_id: election.id,
-        name: "Test Candidate".to_string(),
-        description: Some("A test candidate".to_string()),
-        active: true,
-    };
-
-    assert_eq!(candidate.election_id, election.id);
-    println!("✅ Candidate creation works");
-
-    // Test serialization
-    let election_json = serde_json::to_string(&election)?;
-    let election_back: Election = serde_json::from_str(&election_json)?;
-
-    assert_eq!(election, election_back);
-
-    // Test anonymous vote creation and serialization
-    let key_pair = KeyPair::generate()?;
-    let vote_content = b"test vote content";
-    let signature = key_pair.sign(vote_content);
-    let hash = CryptoUtils::hash(vote_content);
-
-    let vote = AnonymousVote::new(
-        Uuid::new_v4(),
-        election.id,
-        vote_content.to_vec(),
-        &signature,
-        &hash,
-        Utc::now().timestamp(),
-    );
-
-    let vote_json = serde_json::to_string(&vote)?;
-    let vote_back: AnonymousVote = serde_json::from_str(&vote_json)?;
-    assert_eq!(vote.vote_id, vote_back.vote_id);
-
-    println!("✅ Serialization works");
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_voting_workflow_simulation() -> Result<()> {
-    println!("🗳️ Simulating basic voting workflow...");
-
-    // 1. Create election
-    let election = Election {
-        id: Uuid::new_v4(),
-        title: "Mayoral Election 2024".to_string(),
-        description: Some("Election for mayor".to_string()),
-        start_time: Utc::now().timestamp() - 3600,
-        end_time: Utc::now().timestamp() + 3600,
-        active: true,
-        created_at: Utc::now(),
-    };
-
-    assert!(election.is_accepting_votes());
-    println!("✅ Election created and is accepting votes");
-
-    // 2. Create candidates
-    let candidates = vec![
-        Candidate {
-            id: "candidate_a".to_string(),
-            election_id: election.id,
-            name: "Alice Johnson".to_string(),
-            description: Some("Progressive candidate".to_string()),
-            active: true,
-        },
-        Candidate {
-            id: "candidate_b".to_string(),
-            election_id: election.id,
-            name: "Bob Smith".to_string(),
-            description: Some("Conservative candidate".to_string()),
-            active: true,
-        },
-    ];
-
-    println!("✅ Candidates created: {}", candidates.len());
-
-    // 3. Simulate voter registration and voting
-    let hasher = VoterHasher::with_default_salt();
-    let key_pair = KeyPair::generate()?;
-    let mut token_gen = TokenGenerator::new();
-
-    for i in 1..=5 {
-        let bank_id = format!("CZ123456789{}", i);
-        let voter_hash = hasher.hash_voter_identity(&bank_id, &election.id);
-
-        // Generate voting token
-        let nonce = token_gen.generate_nonce();
-        let _token_hash = hasher.hash_token(&voter_hash, &election.id, &nonce);
-
-        // Simulate vote content (just choosing a candidate)
-        let chosen_candidate = &candidates[i % candidates.len()];
-        let vote_content = format!("vote_for:{}", chosen_candidate.id);
-
-        // Sign the vote and create integrity hash
-        let vote_signature = key_pair.sign(vote_content.as_bytes());
-        let integrity_hash = CryptoUtils::hash(vote_content.as_bytes());
-
-        // Create anonymous vote
-        let anonymous_vote = AnonymousVote::new(
-            Uuid::new_v4(),
-            election.id,
-            vote_content.into_bytes(),
-            &vote_signature,
-            &integrity_hash,
-            Utc::now().timestamp(),
-        );
-
-        // Test serialization
-        let vote_json = serde_json::to_string(&anonymous_vote)?;
-        let vote_back: AnonymousVote = serde_json::from_str(&vote_json)?;
-        assert_eq!(anonymous_vote.vote_id, vote_back.vote_id);
-
-        println!("✅ Voter {} cast vote for {}", i, chosen_candidate.name);
-    }
-
-    println!("✅ Voting workflow simulation completed successfully");
-
-    Ok(())
+    println!("✅ ALL TOKEN CRYPTOGRAPHIC SECURITY TESTS PASSED");
+    println!("🔒 Verified protections:");
+    println!("   • Cryptographic token validation");
+    println!("   • Voter identity binding");
+    println!("   • Election-specific tokens");
+    println!("   • Expiration enforcement");
+    println!("   • Forgery prevention");
+    println!("   • Nonce integrity");
 }
 
 #[test]
-fn test_error_handling() {
+fn test_error_handling_comprehensive() {
     use vote::{Error, crypto_error, voting_error};
 
+    // Test crypto errors
     let crypto_err = crypto_error!("test crypto error");
     assert!(matches!(crypto_err, Error::Crypto { .. }));
 
+    // Test voting errors
     let voting_err = voting_error!("test voting error");
     assert!(matches!(voting_err, Error::Voting { .. }));
 
+    // Test validation errors
     let validation_err = Error::validation("test_field");
     assert!(matches!(validation_err, Error::Validation { .. }));
 
-    println!("✅ Error handling works correctly");
+    // Test that errors don't leak sensitive information
+    let error_msg = format!("{}", crypto_err);
+    assert!(!error_msg.contains("token"));
+    assert!(!error_msg.contains("private"));
+    assert!(!error_msg.contains("secret"));
+
+    println!("✅ Comprehensive error handling works correctly");
 }

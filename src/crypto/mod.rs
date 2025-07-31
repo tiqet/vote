@@ -2,11 +2,10 @@
 
 pub mod secure;
 pub mod voting_lock;
+pub mod voting_token;
 pub mod key_rotation;
 
 use crate::{Result, crypto_error};
-use blake3::Hasher;
-use ed25519_dalek::{Signature as Ed25519Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::RngCore;
 use uuid::Uuid;
 
@@ -15,101 +14,14 @@ pub use crate::types::{Hash, PublicKey, Signature};
 // Re-export secure crypto types
 pub use secure::{CryptoRateLimiter, SecureKeyPair, SecureMemory, SecureSaltManager};
 
-/// Salt for voter hash generation (DEPRECATED - use SecureSaltManager)
-#[deprecated(note = "Use SecureSaltManager::from_env() instead for production security")]
-const DEFAULT_VOTER_SALT: &[u8] = b"vote_system_salt_change_in_production_2024";
+// Re-export enhanced voting lock types
+pub use voting_lock::{VotingCompletion, VotingStatus, LogoutResult};
 
-/// Basic cryptographic key pair (DEPRECATED - use SecureKeyPair)
-#[deprecated(note = "Use SecureKeyPair for production security")]
-#[derive(Debug, Clone)]
-pub struct KeyPair {
-    signing_key: SigningKey,
-    verifying_key: VerifyingKey,
-}
-
-impl KeyPair {
-    /// Generate a new random key pair
-    pub fn generate() -> Result<Self> {
-        let mut rng = rand::thread_rng();
-        let signing_key = SigningKey::generate(&mut rng);
-        let verifying_key = signing_key.verifying_key();
-
-        Ok(Self {
-            signing_key,
-            verifying_key,
-        })
-    }
-
-    /// Create a key pair from a seed (for deterministic generation)
-    pub fn from_seed(seed: &[u8; 32]) -> Result<Self> {
-        let signing_key = SigningKey::from_bytes(seed);
-        let verifying_key = signing_key.verifying_key();
-
-        Ok(Self {
-            signing_key,
-            verifying_key,
-        })
-    }
-
-    /// Get the public key bytes
-    pub fn public_key(&self) -> PublicKey {
-        self.verifying_key.to_bytes()
-    }
-
-    /// Sign a message
-    pub fn sign(&self, message: &[u8]) -> Signature {
-        self.signing_key.sign(message).to_bytes()
-    }
-
-    /// Verify a signature against this key pair's public key
-    pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<()> {
-        let ed25519_sig = Ed25519Signature::from_slice(signature)
-            .map_err(|e| crypto_error!("Invalid signature format: {}", e))?;
-
-        self.verifying_key
-            .verify(message, &ed25519_sig)
-            .map_err(|e| crypto_error!("Signature verification failed: {}", e))
-    }
-}
-
-/// Voter identity hasher for anonymization (DEPRECATED)
-#[deprecated(note = "Use SecureSaltManager for production security")]
-pub struct VoterHasher {
-    salt: Vec<u8>,
-}
-
-impl VoterHasher {
-    /// Create a new voter hasher with the provided salt
-    pub fn new(salt: &[u8]) -> Self {
-        Self {
-            salt: salt.to_vec(),
-        }
-    }
-
-    /// Create a voter hasher with the default salt (for development)
-    pub fn with_default_salt() -> Self {
-        Self::new(DEFAULT_VOTER_SALT)
-    }
-
-    /// Generate a voter hash from bank ID and election ID
-    pub fn hash_voter_identity(&self, bank_id: &str, election_id: &Uuid) -> Hash {
-        let mut hasher = Hasher::new();
-        hasher.update(&self.salt);
-        hasher.update(bank_id.as_bytes());
-        hasher.update(election_id.as_bytes());
-        hasher.finalize().into()
-    }
-
-    /// Generate a voting token hash
-    pub fn hash_token(&self, voter_hash: &Hash, election_id: &Uuid, nonce: &[u8]) -> Hash {
-        let mut hasher = Hasher::new();
-        hasher.update(&self.salt);
-        hasher.update(voter_hash);
-        hasher.update(election_id.as_bytes());
-        hasher.update(nonce);
-        hasher.finalize().into()
-    }
-}
+// Re-export voting token types
+pub use voting_token::{
+    VotingTokenService, VotingToken, TokenConfig, TokenState, TokenResult,
+    TokenCleanupService, TokenServiceStats, TokenCleanupStats
+};
 
 /// Secure random token generator
 pub struct TokenGenerator {
@@ -209,38 +121,6 @@ impl CryptoUtils {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
-
-    #[test]
-    fn test_key_pair_generation() {
-        let key_pair = KeyPair::generate().unwrap();
-        let message = b"test message";
-
-        let signature = key_pair.sign(message);
-        assert!(key_pair.verify(message, &signature).is_ok());
-
-        // Wrong message should fail
-        let wrong_message = b"wrong message";
-        assert!(key_pair.verify(wrong_message, &signature).is_err());
-    }
-
-    #[test]
-    fn test_voter_hasher() {
-        let hasher = VoterHasher::with_default_salt();
-        let bank_id = "test_bank_id_123";
-        let election_id = Uuid::new_v4();
-
-        let hash1 = hasher.hash_voter_identity(bank_id, &election_id);
-        let hash2 = hasher.hash_voter_identity(bank_id, &election_id);
-
-        // Same inputs should produce same hash
-        assert_eq!(hash1, hash2);
-
-        // Different election should produce different hash
-        let different_election = Uuid::new_v4();
-        let hash3 = hasher.hash_voter_identity(bank_id, &different_election);
-        assert_ne!(hash1, hash3);
-    }
 
     #[test]
     fn test_token_generator() {
