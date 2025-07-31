@@ -4,6 +4,7 @@ pub mod secure;
 pub mod voting_lock;
 pub mod voting_token;
 pub mod key_rotation;
+pub mod security_context;
 
 use crate::{Result, crypto_error};
 use rand::RngCore;
@@ -15,12 +16,21 @@ pub use crate::types::{Hash, PublicKey, Signature};
 pub use secure::{CryptoRateLimiter, SecureKeyPair, SecureMemory, SecureSaltManager};
 
 // Re-export enhanced voting lock types
-pub use voting_lock::{VotingCompletion, VotingStatus, LogoutResult};
+pub use voting_lock::{VotingCompletion, VotingStatus, LogoutResult, VotingLockService, VotingMethod};
 
 // Re-export voting token types
 pub use voting_token::{
     VotingTokenService, VotingToken, TokenConfig, TokenState, TokenResult,
     TokenCleanupService, TokenServiceStats, TokenCleanupStats
+};
+
+// Re-export key rotation types
+pub use key_rotation::{KeyRotationManager, KeyRotationService, KeyRotationConfig, KeyRotationStats};
+
+// Re-export unified security context
+pub use security_context::{
+    SecurityContext, SecurityEvent, SecuritySession, SecurityLevel, SecurityMetrics,
+    SecurityLoginResult, SecurityVoteResult, SecurityStatus, SecurityIncidentType, SecuritySeverity
 };
 
 /// Secure random token generator
