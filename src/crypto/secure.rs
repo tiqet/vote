@@ -95,7 +95,6 @@ impl SecureSaltManager {
         let mut hasher = blake3::Hasher::new_keyed(&self.voter_salt[..32].try_into().unwrap());
         hasher.update(bank_id.as_bytes());
         hasher.update(election_id.as_bytes());
-        hasher.update(&timestamp.to_le_bytes());
 
         Ok(hasher.finalize().into())
     }

@@ -14,6 +14,7 @@ use vote::{
 use uuid::Uuid;
 use chrono::Utc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::HashSet;
 
 #[tokio::test]
 async fn test_double_voting_prevention_workflow() -> Result<()> {
@@ -168,6 +169,323 @@ async fn test_double_voting_prevention_workflow() -> Result<()> {
     println!("   • Locks automatically expire to prevent deadlocks");
 
     Ok(())
+}
+
+// ============================================================================
+// 🚨 CRITICAL SECURITY VULNERABILITY TESTS
+// ============================================================================
+// These tests MUST catch fundamental security vulnerabilities that could
+// compromise election integrity. Any failure indicates critical security bugs.
+
+#[test]
+fn test_voter_hash_must_be_deterministic_across_different_timestamps() {
+    println!("🔍 CRITICAL SECURITY TEST: Voter hash determinism");
+
+    let salt_manager = SecureSaltManager::for_testing();
+    let bank_id = "CZ1234567890";
+    let election_id = Uuid::new_v4();
+
+    // Simulate the attack: same voter, different timestamps
+    let base_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+    // Generate voter hashes with different timestamps (attack scenario)
+    let hash1 = salt_manager.hash_voter_identity_secure(
+        bank_id,
+        &election_id,
+        base_time,      // Timestamp 1
+        300
+    ).unwrap();
+
+    let hash2 = salt_manager.hash_voter_identity_secure(
+        bank_id,
+        &election_id,
+        base_time + 1,  // Timestamp 2 (1 second later)
+        300
+    ).unwrap();
+
+    let hash3 = salt_manager.hash_voter_identity_secure(
+        bank_id,
+        &election_id,
+        base_time + 60, // Timestamp 3 (1 minute later)
+        300
+    ).unwrap();
+
+    // CRITICAL SECURITY REQUIREMENT:
+    // Same voter MUST get same hash regardless of when they vote
+    assert_eq!(hash1, hash2,
+               "🚨 CRITICAL VULNERABILITY: Same voter gets different hashes with different timestamps!
+         This allows unlimited voting by timestamp manipulation.
+         hash1: {}, hash2: {}",
+               hex::encode(hash1), hex::encode(hash2));
+
+    assert_eq!(hash1, hash3,
+               "🚨 CRITICAL VULNERABILITY: Same voter gets different hashes with different timestamps!
+         This allows unlimited voting by timestamp manipulation.
+         hash1: {}, hash3: {}",
+               hex::encode(hash1), hex::encode(hash3));
+
+    assert_eq!(hash2, hash3,
+               "🚨 CRITICAL VULNERABILITY: Same voter gets different hashes with different timestamps!
+         This allows unlimited voting by timestamp manipulation.
+         hash2: {}, hash3: {}",
+               hex::encode(hash2), hex::encode(hash3));
+
+    println!("✅ SECURITY TEST PASSED: Voter hash is deterministic across timestamps");
+}
+
+#[test]
+fn test_complete_double_voting_attack_scenario() {
+    println!("🔍 CRITICAL SECURITY TEST: Complete double voting attack");
+
+    let salt_manager = SecureSaltManager::for_testing();
+    let bank_id = "CZ1234567890"; // Same malicious voter
+    let election_id = Uuid::new_v4();
+
+    let base_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+    // Simulate attacker trying to vote multiple times with different timestamps
+    let mut unique_hashes = HashSet::new();
+
+    for i in 0..10 {
+        let timestamp = base_time + i; // Different timestamp each time
+
+        let voter_hash = salt_manager.hash_voter_identity_secure(
+            bank_id,
+            &election_id,
+            timestamp,
+            300
+        ).unwrap();
+
+        unique_hashes.insert(voter_hash);
+    }
+
+    // CRITICAL: Should only have 1 unique hash (same voter = same hash)
+    assert_eq!(unique_hashes.len(), 1,
+               "🚨 CRITICAL VULNERABILITY: Got {} different hashes for same voter with different timestamps!
+         This means attacker can vote {} times by manipulating timestamps.
+         Unique hashes: {:?}",
+               unique_hashes.len(),
+               unique_hashes.len(),
+               unique_hashes.iter().map(|h| hex::encode(h)).collect::<Vec<_>>());
+
+    println!("✅ SECURITY TEST PASSED: Same voter produces same hash regardless of timestamp");
+}
+
+#[tokio::test]
+async fn test_double_voting_prevention_with_timestamp_manipulation() {
+    println!("🔍 CRITICAL INTEGRATION TEST: Double voting prevention under timestamp attack");
+
+    let salt_manager = SecureSaltManager::for_testing();
+    let lock_service = VotingLockService::new();
+    let bank_id = "CZ1234567890";
+    let election_id = Uuid::new_v4();
+
+    let base_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+    // First voting attempt
+    let voter_hash1 = salt_manager.hash_voter_identity_secure(
+        bank_id,
+        &election_id,
+        base_time,
+        300
+    ).unwrap();
+    let voter_hash1_str = hex::encode(voter_hash1);
+
+    let lock_result1 = lock_service.acquire_lock(
+        &voter_hash1_str,
+        &election_id,
+        VotingMethod::Digital
+    ).unwrap();
+
+    // Should succeed
+    let voting_lock = match lock_result1 {
+        LockResult::Acquired(lock) => lock,
+        _ => panic!("First voting attempt should succeed"),
+    };
+
+    // Attacker tries to vote again with different timestamp (attack scenario)
+    let voter_hash2 = salt_manager.hash_voter_identity_secure(
+        bank_id,           // Same voter
+        &election_id,      // Same election
+        base_time + 60,    // Different timestamp (attack!)
+        300
+    ).unwrap();
+    let voter_hash2_str = hex::encode(voter_hash2);
+
+    // CRITICAL: Hashes must be the same (same voter = same hash)
+    assert_eq!(voter_hash1_str, voter_hash2_str,
+               "🚨 CRITICAL VULNERABILITY: Same voter with different timestamps gets different hashes!
+         This breaks double voting prevention. Hash1: {}, Hash2: {}",
+               voter_hash1_str, voter_hash2_str);
+
+    // Therefore, second voting attempt should be blocked
+    let lock_result2 = lock_service.acquire_lock(
+        &voter_hash2_str,
+        &election_id,
+        VotingMethod::Digital
+    ).unwrap();
+
+    // Should be blocked (already locked)
+    assert!(matches!(lock_result2, LockResult::AlreadyLocked { .. }),
+            "Second voting attempt should be blocked due to existing lock");
+
+    // Cleanup
+    lock_service.release_lock(&voting_lock).unwrap();
+
+    println!("✅ CRITICAL INTEGRATION TEST PASSED: Double voting prevented despite timestamp manipulation");
+}
+
+#[test]
+fn test_different_voters_get_different_hashes() {
+    println!("🔍 SECURITY TEST: Voter hash uniqueness");
+
+    let salt_manager = SecureSaltManager::for_testing();
+    let election_id = Uuid::new_v4();
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+    // Different voters should get different hashes
+    let voter1_hash = salt_manager.hash_voter_identity_secure(
+        "CZ1111111111",
+        &election_id,
+        timestamp,
+        300
+    ).unwrap();
+
+    let voter2_hash = salt_manager.hash_voter_identity_secure(
+        "CZ2222222222",
+        &election_id,
+        timestamp,
+        300
+    ).unwrap();
+
+    let voter3_hash = salt_manager.hash_voter_identity_secure(
+        "CZ3333333333",
+        &election_id,
+        timestamp,
+        300
+    ).unwrap();
+
+    // Must be different (uniqueness)
+    assert_ne!(voter1_hash, voter2_hash,
+               "Different voters must get different hashes");
+    assert_ne!(voter1_hash, voter3_hash,
+               "Different voters must get different hashes");
+    assert_ne!(voter2_hash, voter3_hash,
+               "Different voters must get different hashes");
+
+    println!("✅ SECURITY TEST PASSED: Different voters get different hashes");
+}
+
+#[test]
+fn test_same_voter_different_elections_different_hashes() {
+    println!("🔍 SECURITY TEST: Cross-election privacy");
+
+    let salt_manager = SecureSaltManager::for_testing();
+    let bank_id = "CZ1234567890";
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+    // Same voter in different elections should get different hashes
+    let election1_id = Uuid::new_v4();
+    let election2_id = Uuid::new_v4();
+
+    let hash_election1 = salt_manager.hash_voter_identity_secure(
+        bank_id,
+        &election1_id,
+        timestamp,
+        300
+    ).unwrap();
+
+    let hash_election2 = salt_manager.hash_voter_identity_secure(
+        bank_id,
+        &election2_id,
+        timestamp,
+        300
+    ).unwrap();
+
+    // Must be different (privacy across elections)
+    assert_ne!(hash_election1, hash_election2,
+               "Same voter must get different hashes in different elections (privacy protection)");
+
+    println!("✅ SECURITY TEST PASSED: Same voter gets different hashes across elections");
+}
+
+#[test]
+fn test_replay_protection_independent_of_voter_hash() {
+    println!("🔍 SECURITY TEST: Replay protection independence");
+
+    let salt_manager = SecureSaltManager::for_testing();
+    let bank_id = "CZ1234567890";
+    let election_id = Uuid::new_v4();
+
+    let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+    // Recent timestamp should work
+    let recent_hash = salt_manager.hash_voter_identity_secure(
+        bank_id,
+        &election_id,
+        current_time - 60, // 1 minute ago
+        300 // 5 minute tolerance
+    );
+    assert!(recent_hash.is_ok(), "Recent timestamp should be accepted");
+
+    // Old timestamp should be rejected
+    let old_hash = salt_manager.hash_voter_identity_secure(
+        bank_id,
+        &election_id,
+        current_time - 400, // 6.67 minutes ago
+        300 // 5 minute tolerance
+    );
+    assert!(old_hash.is_err(), "Old timestamp should be rejected for replay protection");
+
+    // But if both succeed, they should produce the same hash (deterministic)
+    if let (Ok(hash1), Ok(hash2)) = (
+        recent_hash,
+        salt_manager.hash_voter_identity_secure(
+            bank_id,
+            &election_id,
+            current_time - 30, // Different valid timestamp
+            300
+        )
+    ) {
+        assert_eq!(hash1, hash2,
+                   "Different valid timestamps should produce same voter hash");
+    }
+
+    println!("✅ SECURITY TEST PASSED: Replay protection works independently");
+}
+
+#[test]
+fn test_voter_hash_generation_performance() {
+    println!("🔍 PERFORMANCE TEST: Voter hash generation speed");
+
+    let salt_manager = SecureSaltManager::for_testing();
+    let election_id = Uuid::new_v4();
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+    let start = std::time::Instant::now();
+
+    // Generate 1000 hashes (simulating busy election)
+    for i in 0..1000 {
+        let bank_id = format!("CZ{:010}", i);
+        let _hash = salt_manager.hash_voter_identity_secure(
+            &bank_id,
+            &election_id,
+            timestamp,
+            300
+        ).unwrap();
+    }
+
+    let duration = start.elapsed();
+    let ops_per_second = 1000.0 / duration.as_secs_f64();
+
+    println!("Generated 1000 voter hashes in {:?} ({:.0} ops/sec)", duration, ops_per_second);
+
+    // Should handle at least 500 voters per second (reasonable for production)
+    assert!(ops_per_second > 500.0,
+            "Voter hash generation too slow: {:.0} ops/sec (minimum: 500 ops/sec)",
+            ops_per_second);
+
+    println!("✅ PERFORMANCE TEST PASSED: Hash generation fast enough for production");
 }
 
 #[tokio::test]
