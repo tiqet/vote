@@ -1,6 +1,7 @@
 //! Cryptographic primitives for the voting system
 
 pub mod secure;
+pub mod voting_lock;
 
 use crate::{Result, crypto_error};
 use blake3::Hasher;
