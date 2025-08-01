@@ -20,11 +20,12 @@ use crate::crypto::{
     voting_lock::{VotingMethod, LockResult},
     voting_token::{TokenResult, VotingToken},
     audit::{EnhancedAuditSystem, AuditConfig, ComplianceLevel, AuditQuery},
+    security_monitoring::{SecurityPerformanceMonitor, SecurityOperation, SecurityTimingContext, SecurityTimer, SecurityMonitoringConfig},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, RwLock, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use uuid::Uuid;
 
 /// Maximum security events to keep in memory
@@ -223,6 +224,9 @@ pub struct SecurityContext {
     // Enhanced audit system
     audit_system: Arc<EnhancedAuditSystem>,
 
+    // Security performance monitoring
+    performance_monitor: Arc<SecurityPerformanceMonitor>,
+
     // Security state
     active_sessions: Arc<RwLock<HashMap<String, SecuritySession>>>,
     failed_attempts: Arc<RwLock<HashMap<String, VecDeque<FailedAttempt>>>>,
@@ -307,6 +311,16 @@ impl SecurityContext {
         };
         let audit_system = Arc::new(EnhancedAuditSystem::new(audit_config));
 
+        // Initialize security performance monitor
+        let monitoring_config = SecurityMonitoringConfig {
+            metrics_window_seconds: 300, // 5 minutes
+            timing_anomaly_threshold_micros: 50,
+            dos_detection_enabled: true,
+            authentication_pattern_analysis: true,
+            baseline_update_interval_seconds: 3600, // 1 hour
+        };
+        let performance_monitor = Arc::new(SecurityPerformanceMonitor::new(monitoring_config));
+
         Self {
             salt_manager,
             token_service,
@@ -314,6 +328,7 @@ impl SecurityContext {
             key_manager,
             rate_limiter,
             audit_system,
+            performance_monitor,
             active_sessions: Arc::new(RwLock::new(HashMap::new())),
             failed_attempts: Arc::new(RwLock::new(HashMap::new())),
             security_metrics: Arc::new(RwLock::new(initial_metrics)),
@@ -378,6 +393,14 @@ impl SecurityContext {
             }
         };
 
+        // Start performance timing AFTER voter_hash is generated
+        let context = SecurityTimingContext {
+            voter_hash: Some(voter_hash.clone()),
+            election_id: Some(*election_id),
+            ..Default::default()
+        };
+        let timer = SecurityTimer::start(SecurityOperation::SecureLogin, context);
+
         // Check if voter is locked due to security incidents
         if let Some(session) = self.get_session(&voter_hash, election_id).await? {
             if session.security_level == SecurityLevel::Locked {
@@ -390,6 +413,7 @@ impl SecurityContext {
                     ip_address: ip_address.clone(),
                 }).await;
 
+                let _ = timer.finish(false, &self.performance_monitor).await;
                 return Ok(SecurityLoginResult::SecurityLocked {
                     reason: "Account temporarily locked due to security concerns".to_string()
                 });
@@ -416,6 +440,7 @@ impl SecurityContext {
                     ip_address,
                 }).await;
 
+                let _ = timer.finish(false, &self.performance_monitor).await;
                 return Err(e);
             }
         };
@@ -432,9 +457,11 @@ impl SecurityContext {
                     ip_address,
                 }).await;
 
+                let _ = timer.finish(false, &self.performance_monitor).await;
                 return Ok(SecurityLoginResult::TooManyTokens { active_count });
             }
             _ => {
+                let _ = timer.finish(false, &self.performance_monitor).await;
                 return Err(voting_error!("Unexpected token result during login"));
             }
         };
@@ -481,8 +508,9 @@ impl SecurityContext {
             timestamp: current_time,
         }).await;
 
-        // Update metrics
+        // Update metrics and complete performance timing
         self.update_auth_metrics(start_time, true).await;
+        let _ = timer.finish(true, &self.performance_monitor).await;
 
         tracing::info!(
             "🔐 Secure login successful: voter={}, session={}, token={}",
@@ -1101,6 +1129,52 @@ impl SecurityContext {
     pub async fn cleanup_expired_audit_records(&self) -> Result<crate::crypto::audit::AuditCleanupReport> {
         self.audit_system.cleanup_expired().await
     }
+
+    /// Get access to the security performance monitor
+    pub fn performance_monitor(&self) -> &Arc<SecurityPerformanceMonitor> {
+        &self.performance_monitor
+    }
+
+    /// Get current security performance metrics
+    pub async fn get_security_performance_metrics(&self) -> Result<crate::crypto::security_monitoring::SecurityPerformanceMetrics> {
+        self.performance_monitor.get_current_metrics().await
+    }
+
+    /// Get timing statistics for a specific security operation
+    pub async fn get_operation_timing_stats(&self, operation: &SecurityOperation) -> Result<Option<crate::crypto::security_monitoring::OperationTimingStats>> {
+        self.performance_monitor.get_timing_stats(operation).await
+    }
+
+    /// Get authentication patterns analysis
+    pub async fn get_authentication_patterns(&self) -> Result<Vec<crate::crypto::security_monitoring::AuthenticationPattern>> {
+        self.performance_monitor.get_auth_patterns().await
+    }
+
+    /// Get detected DoS patterns
+    pub async fn get_dos_patterns(&self) -> Result<Vec<crate::crypto::security_monitoring::DoSPattern>> {
+        self.performance_monitor.get_dos_patterns().await
+    }
+
+    /// Update security performance baselines
+    pub async fn update_security_baselines(&self) -> Result<()> {
+        self.performance_monitor.update_baselines().await
+    }
+
+    /// Record custom security timing (for external integrations)
+    pub async fn record_security_timing(
+        &self,
+        operation: SecurityOperation,
+        duration: std::time::Duration,
+        success: bool,
+        context: SecurityTimingContext,
+    ) -> Result<crate::crypto::security_monitoring::SecurityThreatAssessment> {
+        self.performance_monitor.record_timing(operation, duration, success, context).await
+    }
+
+    /// Record resource usage for DoS detection
+    pub async fn record_resource_usage(&self, usage: crate::crypto::security_monitoring::ResourceUsage) -> Result<()> {
+        self.performance_monitor.record_resource_usage(usage).await
+    }
 }
 
 /// Result of secure login operation
@@ -1152,7 +1226,8 @@ pub struct SecurityStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::SecureSaltManager;
+    use crate::crypto::{SecureSaltManager, SecurityOperation, SecurityTimingContext};
+    use std::time::Duration;
     use std::sync::Arc;
 
     #[tokio::test]
@@ -1310,5 +1385,17 @@ mod tests {
         let audit_stats = security_context.get_audit_statistics().await.unwrap();
         println!("   Audit records: {}", audit_stats.total_records);
         assert!(audit_stats.total_records > 0);
+
+        // Verify performance monitoring
+        let performance_metrics = security_context.get_security_performance_metrics().await.unwrap();
+        println!("   Security health score: {:.2}", performance_metrics.security_health_score);
+        assert!(performance_metrics.authentication_attempts > 0);
+
+        // Check timing stats for login operation
+        let login_stats = security_context.get_operation_timing_stats(&SecurityOperation::SecureLogin).await.unwrap();
+        if let Some(stats) = login_stats {
+            println!("   Login timing - avg: {:.2}μs, samples: {}", stats.avg_micros, stats.sample_count);
+            assert!(stats.sample_count > 0);
+        }
     }
 }

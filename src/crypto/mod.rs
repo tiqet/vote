@@ -6,6 +6,7 @@ pub mod voting_token;
 pub mod key_rotation;
 pub mod security_context;
 pub mod audit;
+pub mod security_monitoring;
 
 use crate::{Result, crypto_error};
 use rand::RngCore;
@@ -39,6 +40,15 @@ pub use audit::{
     EnhancedAuditSystem, AuditRecord, AuditTrail, AuditConfig, AuditQuery,
     ComplianceLevel, AuditLevel, ComplianceReport, ComplianceAuditRecord,
     AuditIntegrityReport, AuditCleanupReport, AuditTrailStatistics
+};
+
+// Re-export security monitoring system
+pub use security_monitoring::{
+    SecurityPerformanceMonitor, SecurityTimer, SecurityTiming, SecurityOperation,
+    SecurityPerformanceMetrics, OperationTimingStats, AuthenticationPattern,
+    DoSPattern, SecurityThreatAssessment, ThreatLevel, ThreatType,
+    SecurityMonitoringConfig, LayerSecurityIntegration, LayerType,
+    SecurityTimingContext, ResourceUsage
 };
 
 /// Secure random token generator
