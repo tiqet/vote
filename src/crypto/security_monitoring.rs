@@ -13,8 +13,8 @@
 //! - Memory security pattern analysis
 //! - Clean interfaces for future layer integration
 
-use crate::{crypto_error, Result};
 use crate::crypto::SecurityEvent;
+use crate::{Result, crypto_error};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, RwLock};
@@ -100,18 +100,14 @@ impl SecurityTiming {
 
     /// Check if this timing indicates a potential timing attack
     pub fn is_anomalous(&self, baseline_micros: u64) -> bool {
-        let deviation = if self.duration_micros > baseline_micros {
-            self.duration_micros - baseline_micros
-        } else {
-            baseline_micros - self.duration_micros
-        };
+        let deviation = self.duration_micros.abs_diff(baseline_micros);
 
         deviation > TIMING_ATTACK_THRESHOLD_MICROS
     }
 }
 
 /// Context information for timing measurements
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SecurityTimingContext {
     pub voter_hash: Option<String>,
     pub election_id: Option<Uuid>,
@@ -119,19 +115,6 @@ pub struct SecurityTimingContext {
     pub operation_size: Option<usize>, // Data size processed
     pub cpu_load: Option<f64>,
     pub memory_usage_mb: Option<u64>,
-}
-
-impl Default for SecurityTimingContext {
-    fn default() -> Self {
-        Self {
-            voter_hash: None,
-            election_id: None,
-            session_id: None,
-            operation_size: None,
-            cpu_load: None,
-            memory_usage_mb: None,
-        }
-    }
 }
 
 /// Resource usage measurement
@@ -198,7 +181,8 @@ impl AuthenticationPattern {
             let interval = (now - self.last_attempt) as f64;
             let total_attempts = (self.failed_attempts + self.success_count) as f64;
 
-            self.avg_attempt_interval = (self.avg_attempt_interval * (total_attempts - 1.0) + interval) / total_attempts;
+            self.avg_attempt_interval =
+                (self.avg_attempt_interval * (total_attempts - 1.0) + interval) / total_attempts;
         }
 
         self.last_attempt = now;
@@ -344,9 +328,11 @@ impl OperationTimingStats {
         };
 
         // Calculate standard deviation
-        let variance = durations.iter()
+        let variance = durations
+            .iter()
             .map(|&d| (d as f64 - avg_micros).powi(2))
-            .sum::<f64>() / durations.len() as f64;
+            .sum::<f64>()
+            / durations.len() as f64;
         let std_deviation = variance.sqrt();
 
         // Calculate percentiles
@@ -357,7 +343,8 @@ impl OperationTimingStats {
 
         // Count anomalies (values beyond 3 standard deviations)
         let anomaly_threshold = avg_micros + (3.0 * std_deviation);
-        let anomaly_count = durations.iter()
+        let anomaly_count = durations
+            .iter()
             .filter(|&&d| d as f64 > anomaly_threshold)
             .count() as u32;
 
@@ -387,9 +374,9 @@ impl OperationTimingStats {
             0.0
         };
 
-        anomaly_rate < 0.01 &&
-            self.std_deviation < (self.avg_micros * 0.5) &&
-            self.p99_micros < (self.avg_micros * 10.0) as u64
+        anomaly_rate < 0.01
+            && self.std_deviation < (self.avg_micros * 0.5)
+            && self.p99_micros < (self.avg_micros * 10.0) as u64
     }
 }
 
@@ -470,10 +457,14 @@ impl SecurityPerformanceMonitor {
 
         // Store timing data
         {
-            let mut timing_data = self.timing_data.write()
+            let mut timing_data = self
+                .timing_data
+                .write()
                 .map_err(|_| crypto_error!("Failed to lock timing data"))?;
 
-            let operation_timings = timing_data.entry(operation.clone()).or_insert_with(VecDeque::new);
+            let operation_timings = timing_data
+                .entry(operation.clone())
+                .or_insert_with(VecDeque::new);
             operation_timings.push_back(timing.clone());
 
             // Maintain size limit
@@ -483,8 +474,12 @@ impl SecurityPerformanceMonitor {
         }
 
         // **NEW: Immediately aggregate authentication patterns**
-        if matches!(operation, SecurityOperation::SecureLogin | SecurityOperation::SessionValidation) {
-            self.update_auth_pattern_immediately(&timing, success).await?;
+        if matches!(
+            operation,
+            SecurityOperation::SecureLogin | SecurityOperation::SessionValidation
+        ) {
+            self.update_auth_pattern_immediately(&timing, success)
+                .await?;
         }
 
         // Analyze for threats
@@ -494,16 +489,23 @@ impl SecurityPerformanceMonitor {
     }
 
     /// **NEW: Immediately aggregate individual login attempts into AuthenticationPattern**
-    async fn update_auth_pattern_immediately(&self, timing: &SecurityTiming, success: bool) -> Result<()> {
+    async fn update_auth_pattern_immediately(
+        &self,
+        timing: &SecurityTiming,
+        success: bool,
+    ) -> Result<()> {
         if let Some(voter_hash) = &timing.context.voter_hash {
-            let mut auth_patterns = self.auth_patterns.write()
+            let mut auth_patterns = self
+                .auth_patterns
+                .write()
                 .map_err(|_| crypto_error!("Failed to write auth patterns"))?;
 
             let pattern = auth_patterns
                 .entry(voter_hash.clone())
                 .or_insert_with(|| AuthenticationPattern::new(voter_hash.clone()));
 
-            let timing_anomaly = timing.duration_micros > (self.config.timing_anomaly_threshold_micros * 2);
+            let timing_anomaly =
+                timing.duration_micros > (self.config.timing_anomaly_threshold_micros * 2);
             pattern.record_attempt(success, timing_anomaly);
 
             // **CRITICAL**: Immediately calculate if this pattern is now suspicious
@@ -515,7 +517,9 @@ impl SecurityPerformanceMonitor {
 
     /// Get authentication patterns analysis - **FIXED: Now returns immediately aggregated patterns**
     pub async fn get_auth_patterns(&self) -> Result<Vec<AuthenticationPattern>> {
-        let auth_patterns = self.auth_patterns.read()
+        let auth_patterns = self
+            .auth_patterns
+            .read()
             .map_err(|_| crypto_error!("Failed to read auth patterns"))?;
 
         // Return all patterns (they're already aggregated immediately when recorded)
@@ -525,7 +529,9 @@ impl SecurityPerformanceMonitor {
     /// Record resource usage
     pub async fn record_resource_usage(&self, usage: ResourceUsage) -> Result<()> {
         {
-            let mut resource_history = self.resource_history.write()
+            let mut resource_history = self
+                .resource_history
+                .write()
                 .map_err(|_| crypto_error!("Failed to lock resource history"))?;
 
             resource_history.push_back(usage.clone());
@@ -546,29 +552,40 @@ impl SecurityPerformanceMonitor {
     pub async fn get_current_metrics(&self) -> Result<SecurityPerformanceMetrics> {
         self.update_metrics_window().await?;
 
-        let metrics = self.current_metrics.read()
+        let metrics = self
+            .current_metrics
+            .read()
             .map_err(|_| crypto_error!("Failed to read current metrics"))?;
 
         Ok(metrics.clone())
     }
 
     /// Get operation timing statistics
-    pub async fn get_timing_stats(&self, operation: &SecurityOperation) -> Result<Option<OperationTimingStats>> {
-        let timing_data = self.timing_data.read()
+    pub async fn get_timing_stats(
+        &self,
+        operation: &SecurityOperation,
+    ) -> Result<Option<OperationTimingStats>> {
+        let timing_data = self
+            .timing_data
+            .read()
             .map_err(|_| crypto_error!("Failed to read timing data"))?;
 
         if let Some(timings) = timing_data.get(operation) {
             let timings_vec: Vec<SecurityTiming> = timings.iter().cloned().collect();
-            Ok(Some(OperationTimingStats::from_timings(operation.clone(), &timings_vec)))
+            Ok(Some(OperationTimingStats::from_timings(
+                operation.clone(),
+                &timings_vec,
+            )))
         } else {
             Ok(None)
         }
     }
 
-
     /// Get detected DoS patterns
     pub async fn get_dos_patterns(&self) -> Result<Vec<DoSPattern>> {
-        let dos_patterns = self.dos_patterns.read()
+        let dos_patterns = self
+            .dos_patterns
+            .read()
             .map_err(|_| crypto_error!("Failed to read DoS patterns"))?;
 
         Ok(dos_patterns.clone())
@@ -576,10 +593,14 @@ impl SecurityPerformanceMonitor {
 
     /// Update performance baselines
     pub async fn update_baselines(&self) -> Result<()> {
-        let timing_data = self.timing_data.read()
+        let timing_data = self
+            .timing_data
+            .read()
             .map_err(|_| crypto_error!("Failed to read timing data"))?;
 
-        let mut baselines = self.baselines.write()
+        let mut baselines = self
+            .baselines
+            .write()
             .map_err(|_| crypto_error!("Failed to write baselines"))?;
 
         for (operation, timings) in timing_data.iter() {
@@ -588,14 +609,20 @@ impl SecurityPerformanceMonitor {
             baselines.insert(operation.clone(), stats);
         }
 
-        tracing::info!("📊 Security performance baselines updated for {} operations", baselines.len());
+        tracing::info!(
+            "📊 Security performance baselines updated for {} operations",
+            baselines.len()
+        );
 
         Ok(())
     }
 
     /// Private helper methods
 
-    async fn analyze_timing_threat(&self, timing: &SecurityTiming) -> Result<SecurityThreatAssessment> {
+    async fn analyze_timing_threat(
+        &self,
+        timing: &SecurityTiming,
+    ) -> Result<SecurityThreatAssessment> {
         let mut assessment = SecurityThreatAssessment {
             threat_level: ThreatLevel::None,
             threat_type: None,
@@ -605,7 +632,9 @@ impl SecurityPerformanceMonitor {
         };
 
         // Check against baseline
-        let baselines = self.baselines.read()
+        let baselines = self
+            .baselines
+            .read()
             .map_err(|_| crypto_error!("Failed to read baselines"))?;
 
         if let Some(baseline) = baselines.get(&timing.operation) {
@@ -617,7 +646,9 @@ impl SecurityPerformanceMonitor {
                     "Timing anomaly detected: {}μs vs baseline {}μs",
                     timing.duration_micros, baseline.avg_micros
                 );
-                assessment.recommended_actions.push("Monitor for timing attack patterns".to_string());
+                assessment
+                    .recommended_actions
+                    .push("Monitor for timing attack patterns".to_string());
             }
         }
 
@@ -626,7 +657,9 @@ impl SecurityPerformanceMonitor {
 
     async fn update_auth_pattern(&self, timing: &SecurityTiming, success: bool) -> Result<()> {
         if let Some(voter_hash) = &timing.context.voter_hash {
-            let mut auth_patterns = self.auth_patterns.write()
+            let mut auth_patterns = self
+                .auth_patterns
+                .write()
                 .map_err(|_| crypto_error!("Failed to write auth patterns"))?;
 
             let pattern = auth_patterns
@@ -666,14 +699,19 @@ impl SecurityPerformanceMonitor {
                 start_time: usage.timestamp,
                 peak_time: Some(usage.timestamp),
                 duration_seconds: 0,
-                affected_operations: vec![SecurityOperation::TokenValidation, SecurityOperation::VoterHashGeneration],
+                affected_operations: vec![
+                    SecurityOperation::TokenValidation,
+                    SecurityOperation::VoterHashGeneration,
+                ],
                 mitigation_applied: false,
             });
         }
 
         // Store detected patterns
         if !detected_patterns.is_empty() {
-            let mut dos_patterns = self.dos_patterns.write()
+            let mut dos_patterns = self
+                .dos_patterns
+                .write()
                 .map_err(|_| crypto_error!("Failed to write DoS patterns"))?;
 
             dos_patterns.extend(detected_patterns);
@@ -692,16 +730,24 @@ impl SecurityPerformanceMonitor {
             .unwrap_or_default()
             .as_secs();
 
-        let timing_data = self.timing_data.read()
+        let timing_data = self
+            .timing_data
+            .read()
             .map_err(|_| crypto_error!("Failed to read timing data"))?;
 
-        let auth_patterns = self.auth_patterns.read()
+        let auth_patterns = self
+            .auth_patterns
+            .read()
             .map_err(|_| crypto_error!("Failed to read auth patterns"))?;
 
-        let resource_history = self.resource_history.read()
+        let resource_history = self
+            .resource_history
+            .read()
             .map_err(|_| crypto_error!("Failed to read resource history"))?;
 
-        let dos_patterns = self.dos_patterns.read()
+        let dos_patterns = self
+            .dos_patterns
+            .read()
             .map_err(|_| crypto_error!("Failed to read DoS patterns"))?;
 
         // Calculate metrics for current window
@@ -723,11 +769,13 @@ impl SecurityPerformanceMonitor {
         }
 
         // Calculate authentication metrics
-        let suspicious_patterns = auth_patterns.values()
+        let suspicious_patterns = auth_patterns
+            .values()
             .filter(|pattern| pattern.is_suspicious())
             .count() as u32;
 
-        let brute_force_attempts = auth_patterns.values()
+        let brute_force_attempts = auth_patterns
+            .values()
             .filter(|pattern| pattern.failed_attempts > 10)
             .count() as u32;
 
@@ -737,10 +785,21 @@ impl SecurityPerformanceMonitor {
             .filter(|r| now - r.timestamp < self.config.metrics_window_seconds)
             .collect();
 
-        let (avg_cpu, peak_memory, peak_sessions, rate_limit_violations) = if !recent_resources.is_empty() {
-            let avg_cpu = recent_resources.iter().map(|r| r.cpu_percent).sum::<f64>() / recent_resources.len() as f64;
-            let peak_memory = recent_resources.iter().map(|r| r.memory_mb).max().unwrap_or(0);
-            let peak_sessions = recent_resources.iter().map(|r| r.active_sessions).max().unwrap_or(0);
+        let (avg_cpu, peak_memory, peak_sessions, rate_limit_violations) = if !recent_resources
+            .is_empty()
+        {
+            let avg_cpu = recent_resources.iter().map(|r| r.cpu_percent).sum::<f64>()
+                / recent_resources.len() as f64;
+            let peak_memory = recent_resources
+                .iter()
+                .map(|r| r.memory_mb)
+                .max()
+                .unwrap_or(0);
+            let peak_sessions = recent_resources
+                .iter()
+                .map(|r| r.active_sessions)
+                .max()
+                .unwrap_or(0);
             let total_rate_violations = recent_resources.iter().map(|r| r.rate_limit_hits).sum();
             (avg_cpu, peak_memory, peak_sessions, total_rate_violations)
         } else {
@@ -757,7 +816,9 @@ impl SecurityPerformanceMonitor {
 
         // Update current metrics
         {
-            let mut current_metrics = self.current_metrics.write()
+            let mut current_metrics = self
+                .current_metrics
+                .write()
                 .map_err(|_| crypto_error!("Failed to write current metrics"))?;
 
             *current_metrics = SecurityPerformanceMetrics {
@@ -766,8 +827,14 @@ impl SecurityPerformanceMonitor {
                 operation_timings,
                 timing_anomalies_detected: timing_anomalies,
                 potential_timing_attacks: timing_anomalies / 10, // Estimate
-                authentication_attempts: auth_patterns.values().map(|p| p.success_count + p.failed_attempts).sum::<u32>() as u64,
-                authentication_failures: auth_patterns.values().map(|p| p.failed_attempts).sum::<u32>() as u64,
+                authentication_attempts: auth_patterns
+                    .values()
+                    .map(|p| p.success_count + p.failed_attempts)
+                    .sum::<u32>() as u64,
+                authentication_failures: auth_patterns
+                    .values()
+                    .map(|p| p.failed_attempts)
+                    .sum::<u32>() as u64,
                 suspicious_patterns,
                 brute_force_attempts,
                 avg_cpu_percent: avg_cpu,
@@ -863,7 +930,7 @@ impl Default for SecurityMonitoringConfig {
 impl SecurityMonitoringConfig {
     pub fn for_testing() -> Self {
         Self {
-            metrics_window_seconds: 60, // 1 minute for testing
+            metrics_window_seconds: 60,          // 1 minute for testing
             timing_anomaly_threshold_micros: 10, // Lower threshold for testing
             dos_detection_enabled: true,
             authentication_pattern_analysis: true,
@@ -875,7 +942,12 @@ impl SecurityMonitoringConfig {
 /// Interface for future layer integration
 pub trait LayerSecurityIntegration {
     /// Called by web layer to provide HTTP context
-    fn provide_web_context(&self, request_id: String, client_ip: Option<String>, user_agent: Option<String>);
+    fn provide_web_context(
+        &self,
+        request_id: String,
+        client_ip: Option<String>,
+        user_agent: Option<String>,
+    );
 
     /// Called by DB layer to provide database operation context
     fn provide_db_context(&self, query_type: String, execution_time: Duration, affected_rows: u64);
@@ -907,9 +979,15 @@ impl SecurityTimer {
         }
     }
 
-    pub async fn finish(self, success: bool, monitor: &SecurityPerformanceMonitor) -> Result<SecurityThreatAssessment> {
+    pub async fn finish(
+        self,
+        success: bool,
+        monitor: &SecurityPerformanceMonitor,
+    ) -> Result<SecurityThreatAssessment> {
         let duration = self.start_time.elapsed();
-        monitor.record_timing(self.operation, duration, success, self.context).await
+        monitor
+            .record_timing(self.operation, duration, success, self.context)
+            .await
     }
 }
 
@@ -940,37 +1018,52 @@ mod tests {
 
         // Record normal timing
         let normal_duration = Duration::from_micros(100);
-        let assessment1 = monitor.record_timing(
-            SecurityOperation::TokenValidation,
-            normal_duration,
-            true,
-            context.clone(),
-        ).await.unwrap();
+        let assessment1 = monitor
+            .record_timing(
+                SecurityOperation::TokenValidation,
+                normal_duration,
+                true,
+                context.clone(),
+            )
+            .await
+            .unwrap();
 
         assert_eq!(assessment1.threat_level, ThreatLevel::None);
 
         // Record anomalous timing
         let anomalous_duration = Duration::from_millis(100); // Much longer
-        let assessment2 = monitor.record_timing(
-            SecurityOperation::TokenValidation,
-            anomalous_duration,
-            true,
-            context,
-        ).await.unwrap();
+        let assessment2 = monitor
+            .record_timing(
+                SecurityOperation::TokenValidation,
+                anomalous_duration,
+                true,
+                context,
+            )
+            .await
+            .unwrap();
 
         // Update baselines first
         monitor.update_baselines().await.unwrap();
 
         // Get timing stats
-        let stats = monitor.get_timing_stats(&SecurityOperation::TokenValidation).await.unwrap();
+        let stats = monitor
+            .get_timing_stats(&SecurityOperation::TokenValidation)
+            .await
+            .unwrap();
         assert!(stats.is_some());
         let stats = stats.unwrap();
         assert_eq!(stats.sample_count, 2);
 
         println!("✅ Timing measurement and analysis works");
         println!("   Normal duration: {}μs", normal_duration.as_micros());
-        println!("   Anomalous duration: {}μs", anomalous_duration.as_micros());
-        println!("   Stats: avg={}μs, max={}μs", stats.avg_micros, stats.max_micros);
+        println!(
+            "   Anomalous duration: {}μs",
+            anomalous_duration.as_micros()
+        );
+        println!(
+            "   Stats: avg={}μs, max={}μs",
+            stats.avg_micros, stats.max_micros
+        );
     }
 
     #[tokio::test]
@@ -987,18 +1080,22 @@ mod tests {
         // Simulate multiple failed login attempts
         for i in 0..10 {
             let success = i % 5 == 0; // Mostly failures
-            monitor.record_timing(
-                SecurityOperation::SecureLogin,
-                Duration::from_millis(50),
-                success,
-                context.clone(),
-            ).await.unwrap();
+            monitor
+                .record_timing(
+                    SecurityOperation::SecureLogin,
+                    Duration::from_millis(50),
+                    success,
+                    context.clone(),
+                )
+                .await
+                .unwrap();
         }
 
         let auth_patterns = monitor.get_auth_patterns().await.unwrap();
         assert!(!auth_patterns.is_empty());
 
-        let pattern = auth_patterns.iter()
+        let pattern = auth_patterns
+            .iter()
             .find(|p| p.voter_hash == voter_hash)
             .unwrap();
 
@@ -1017,7 +1114,10 @@ mod tests {
 
         // Record normal resource usage
         let normal_usage = ResourceUsage {
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             cpu_percent: 20.0,
             memory_mb: 100,
             active_sessions: 50,
@@ -1029,7 +1129,10 @@ mod tests {
 
         // Record high resource usage (potential DoS)
         let high_usage = ResourceUsage {
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             cpu_percent: 95.0, // Very high CPU
             memory_mb: 600,    // High memory
             active_sessions: 1000,
@@ -1042,11 +1145,15 @@ mod tests {
         let dos_patterns = monitor.get_dos_patterns().await.unwrap();
         assert!(!dos_patterns.is_empty());
 
-        let cpu_pattern = dos_patterns.iter()
+        let cpu_pattern = dos_patterns
+            .iter()
             .find(|p| matches!(p.detection_type, DoSDetectionType::ResourceExhaustion))
             .unwrap();
 
-        assert!(matches!(cpu_pattern.severity, DoSSeverity::Medium | DoSSeverity::High));
+        assert!(matches!(
+            cpu_pattern.severity,
+            DoSSeverity::Medium | DoSSeverity::High
+        ));
 
         println!("✅ Resource monitoring and DoS detection works");
         println!("   DoS patterns detected: {}", dos_patterns.len());
@@ -1074,7 +1181,11 @@ mod tests {
         assert_eq!(assessment.threat_level, ThreatLevel::None);
 
         let metrics = monitor.get_current_metrics().await.unwrap();
-        assert!(metrics.operation_timings.contains_key(&SecurityOperation::VotingLockAcquisition));
+        assert!(
+            metrics
+                .operation_timings
+                .contains_key(&SecurityOperation::VotingLockAcquisition)
+        );
 
         println!("✅ Security timer convenience functionality works");
     }
@@ -1090,22 +1201,28 @@ mod tests {
         // Add some problematic patterns
         for i in 0..20 {
             let suspicious_context = SecurityTimingContext {
-                voter_hash: Some(format!("attacker_{}", i)),
+                voter_hash: Some(format!("attacker_{i}")),
                 ..Default::default()
             };
 
             // Failed authentication attempts
-            monitor.record_timing(
-                SecurityOperation::SecureLogin,
-                Duration::from_millis(200), // Slower timing
-                false, // Failed
-                suspicious_context,
-            ).await.unwrap();
+            monitor
+                .record_timing(
+                    SecurityOperation::SecureLogin,
+                    Duration::from_millis(200), // Slower timing
+                    false,                      // Failed
+                    suspicious_context,
+                )
+                .await
+                .unwrap();
         }
 
         // Record high resource usage
         let high_usage = ResourceUsage {
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             cpu_percent: 85.0,
             memory_mb: 400,
             active_sessions: 200,
@@ -1123,9 +1240,18 @@ mod tests {
         assert!(final_metrics.avg_cpu_percent > 80.0);
 
         println!("✅ Security health score calculation works");
-        println!("   Initial health: {:.2}", initial_metrics.security_health_score);
-        println!("   Final health: {:.2}", final_metrics.security_health_score);
-        println!("   Auth failures: {}", final_metrics.authentication_failures);
+        println!(
+            "   Initial health: {:.2}",
+            initial_metrics.security_health_score
+        );
+        println!(
+            "   Final health: {:.2}",
+            final_metrics.security_health_score
+        );
+        println!(
+            "   Auth failures: {}",
+            final_metrics.authentication_failures
+        );
         println!("   Avg CPU: {:.1}%", final_metrics.avg_cpu_percent);
     }
 }

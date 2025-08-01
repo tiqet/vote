@@ -14,8 +14,8 @@
 //! - Cryptographic validation always performed regardless of basic checks
 //! - No early returns that could leak timing information
 
-use crate::{voting_error, Result};
 use crate::crypto::SecureMemory;
+use crate::{Result, voting_error};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -53,9 +53,9 @@ impl TokenConfig {
     /// Configuration for testing with shorter timeouts
     pub fn for_testing() -> Self {
         Self {
-            lifetime_seconds: 300,     // 5 minutes for testing
+            lifetime_seconds: 300,        // 5 minutes for testing
             cleanup_interval_seconds: 30, // 30 seconds cleanup
-            max_tokens_per_voter: 2,   // Reduced for testing
+            max_tokens_per_voter: 2,      // Reduced for testing
         }
     }
 }
@@ -142,11 +142,7 @@ impl VotingToken {
             .unwrap_or_default()
             .as_secs();
 
-        if current_time >= self.expires_at {
-            0
-        } else {
-            self.expires_at - current_time
-        }
+        self.expires_at.saturating_sub(current_time)
     }
 
     /// Mark token as used
@@ -161,7 +157,9 @@ impl VotingToken {
                 self.state = TokenState::Used { vote_id, used_at };
                 Ok(())
             }
-            _ => Err(voting_error!("Token is not active and cannot be marked as used")),
+            _ => Err(voting_error!(
+                "Token is not active and cannot be marked as used"
+            )),
         }
     }
 
@@ -243,18 +241,23 @@ impl VotingTokenService {
         election_id: &Uuid,
         session_id: Option<String>,
     ) -> Result<TokenResult> {
-        let voter_key = format!("voter_tokens:{}:{}", voter_hash, election_id);
+        let voter_key = format!("voter_tokens:{voter_hash}:{election_id}");
 
         // Check if voter already has too many active tokens
         {
-            let voter_tokens = self.voter_tokens.read()
+            let voter_tokens = self
+                .voter_tokens
+                .read()
                 .map_err(|_| voting_error!("Token service read error"))?;
 
             if let Some(token_ids) = voter_tokens.get(&voter_key) {
-                let tokens = self.tokens.read()
+                let tokens = self
+                    .tokens
+                    .read()
                     .map_err(|_| voting_error!("Token service read error"))?;
 
-                let active_count = token_ids.iter()
+                let active_count = token_ids
+                    .iter()
                     .filter_map(|id| tokens.get(id))
                     .filter(|token| token.is_usable())
                     .count();
@@ -266,8 +269,8 @@ impl VotingTokenService {
         }
 
         // Generate secure token
-        let voter_hash_bytes = hex::decode(voter_hash)
-            .map_err(|_| voting_error!("Invalid voter hash format"))?;
+        let voter_hash_bytes =
+            hex::decode(voter_hash).map_err(|_| voting_error!("Invalid voter hash format"))?;
 
         if voter_hash_bytes.len() != 32 {
             return Err(voting_error!("Voter hash must be 32 bytes"));
@@ -303,16 +306,21 @@ impl VotingTokenService {
 
         // Store token atomically
         {
-            let mut tokens = self.tokens.write()
+            let mut tokens = self
+                .tokens
+                .write()
                 .map_err(|_| voting_error!("Token service write error"))?;
-            let mut voter_tokens = self.voter_tokens.write()
+            let mut voter_tokens = self
+                .voter_tokens
+                .write()
                 .map_err(|_| voting_error!("Token service write error"))?;
 
             // Add to main storage
             tokens.insert(token.token_id.clone(), token.clone());
 
             // Add to voter index
-            voter_tokens.entry(voter_key)
+            voter_tokens
+                .entry(voter_key)
                 .or_insert_with(Vec::new)
                 .push(token.token_id.clone());
         }
@@ -341,7 +349,9 @@ impl VotingTokenService {
         voter_hash: &str,
         election_id: &Uuid,
     ) -> Result<TokenResult> {
-        let tokens = self.tokens.read()
+        let tokens = self
+            .tokens
+            .read()
             .map_err(|_| voting_error!("Token service read error"))?;
 
         // Get token or use dummy token to maintain constant timing
@@ -386,17 +396,18 @@ impl VotingTokenService {
         // Constant-time comparisons for all checks
         use subtle::ConstantTimeEq;
         let voter_hash_matches = SecureMemory::constant_time_str_eq(&token.voter_hash, voter_hash);
-        let election_id_matches = SecureMemory::constant_time_uuid_eq(&token.election_id, election_id);
+        let election_id_matches =
+            SecureMemory::constant_time_uuid_eq(&token.election_id, election_id);
         let token_is_usable = if token.is_usable() { 1u8 } else { 0u8 }.ct_eq(&1u8);
         let token_exists_ct = if token_exists { 1u8 } else { 0u8 }.ct_eq(&1u8);
         let crypto_valid = if crypto_validation_result { 1u8 } else { 0u8 }.ct_eq(&1u8);
 
         // Combine all checks with constant-time AND operations
-        let all_checks_pass = token_exists_ct &
-            (if voter_hash_matches { 1u8 } else { 0u8 }).ct_eq(&1u8) &
-            (if election_id_matches { 1u8 } else { 0u8 }).ct_eq(&1u8) &
-            token_is_usable &
-            crypto_valid;
+        let all_checks_pass = token_exists_ct
+            & (if voter_hash_matches { 1u8 } else { 0u8 }).ct_eq(&1u8)
+            & (if election_id_matches { 1u8 } else { 0u8 }).ct_eq(&1u8)
+            & token_is_usable
+            & crypto_valid;
 
         // Return result based on combined constant-time check
         if all_checks_pass.into() {
@@ -404,19 +415,27 @@ impl VotingTokenService {
         } else {
             // Determine the most appropriate error message without leaking timing info
             if !token_exists {
-                Ok(TokenResult::Invalid { reason: "Token not found".to_string() })
+                Ok(TokenResult::Invalid {
+                    reason: "Token not found".to_string(),
+                })
             } else if !token.is_usable() {
                 let reason = match &token.state {
-                    TokenState::Used { used_at, .. } => format!("Token already used at {}", used_at),
-                    TokenState::Invalidated { invalidated_at } => format!("Token invalidated at {}", invalidated_at),
+                    TokenState::Used { used_at, .. } => format!("Token already used at {used_at}"),
+                    TokenState::Invalidated { invalidated_at } => {
+                        format!("Token invalidated at {invalidated_at}")
+                    }
                     TokenState::Expired => "Token expired".to_string(),
                     TokenState::Active => "Token expired".to_string(),
                 };
                 Ok(TokenResult::Invalid { reason })
             } else if !crypto_validation_result {
-                Ok(TokenResult::Invalid { reason: "Token cryptographic validation failed".to_string() })
+                Ok(TokenResult::Invalid {
+                    reason: "Token cryptographic validation failed".to_string(),
+                })
             } else {
-                Ok(TokenResult::Invalid { reason: "Token validation failed".to_string() })
+                Ok(TokenResult::Invalid {
+                    reason: "Token validation failed".to_string(),
+                })
             }
         }
     }
@@ -447,7 +466,9 @@ impl VotingTokenService {
     ///
     /// SECURITY: Immediate token invalidation prevents reuse
     pub fn invalidate_token(&self, token_id: &str) -> Result<TokenResult> {
-        let mut tokens = self.tokens.write()
+        let mut tokens = self
+            .tokens
+            .write()
             .map_err(|_| voting_error!("Token service write error"))?;
 
         if let Some(token) = tokens.get_mut(token_id) {
@@ -461,10 +482,14 @@ impl VotingTokenService {
                     );
                     Ok(TokenResult::Invalidated)
                 }
-                _ => Ok(TokenResult::Invalid { reason: "Token not active".to_string() }),
+                _ => Ok(TokenResult::Invalid {
+                    reason: "Token not active".to_string(),
+                }),
             }
         } else {
-            Ok(TokenResult::Invalid { reason: "Token not found".to_string() })
+            Ok(TokenResult::Invalid {
+                reason: "Token not found".to_string(),
+            })
         }
     }
 
@@ -472,14 +497,18 @@ impl VotingTokenService {
     ///
     /// SECURITY: Comprehensive session cleanup for logout scenarios
     pub fn invalidate_voter_tokens(&self, voter_hash: &str, election_id: &Uuid) -> Result<u32> {
-        let voter_key = format!("voter_tokens:{}:{}", voter_hash, election_id);
+        let voter_key = format!("voter_tokens:{voter_hash}:{election_id}");
         let mut invalidated_count = 0;
 
-        let voter_tokens = self.voter_tokens.read()
+        let voter_tokens = self
+            .voter_tokens
+            .read()
             .map_err(|_| voting_error!("Token service read error"))?;
 
         if let Some(token_ids) = voter_tokens.get(&voter_key) {
-            let mut tokens = self.tokens.write()
+            let mut tokens = self
+                .tokens
+                .write()
                 .map_err(|_| voting_error!("Token service write error"))?;
 
             for token_id in token_ids {
@@ -508,7 +537,9 @@ impl VotingTokenService {
     ///
     /// SECURITY: Prevents token reuse after voting completion
     pub fn mark_token_used(&self, token_id: &str, vote_id: Uuid) -> Result<TokenResult> {
-        let mut tokens = self.tokens.write()
+        let mut tokens = self
+            .tokens
+            .write()
             .map_err(|_| voting_error!("Token service write error"))?;
 
         if let Some(token) = tokens.get_mut(token_id) {
@@ -520,19 +551,29 @@ impl VotingTokenService {
             );
             Ok(TokenResult::Valid(token.clone()))
         } else {
-            Ok(TokenResult::Invalid { reason: "Token not found".to_string() })
+            Ok(TokenResult::Invalid {
+                reason: "Token not found".to_string(),
+            })
         }
     }
 
     /// Get all active tokens for a voter
     ///
     /// SECURITY: Provides visibility into voter's active sessions
-    pub fn get_voter_tokens(&self, voter_hash: &str, election_id: &Uuid) -> Result<Vec<VotingToken>> {
-        let voter_key = format!("voter_tokens:{}:{}", voter_hash, election_id);
+    pub fn get_voter_tokens(
+        &self,
+        voter_hash: &str,
+        election_id: &Uuid,
+    ) -> Result<Vec<VotingToken>> {
+        let voter_key = format!("voter_tokens:{voter_hash}:{election_id}");
 
-        let voter_tokens = self.voter_tokens.read()
+        let voter_tokens = self
+            .voter_tokens
+            .read()
             .map_err(|_| voting_error!("Token service read error"))?;
-        let tokens = self.tokens.read()
+        let tokens = self
+            .tokens
+            .read()
             .map_err(|_| voting_error!("Token service read error"))?;
 
         let mut result = Vec::new();
@@ -555,9 +596,13 @@ impl VotingTokenService {
     /// - Used tokens: 1-hour retention for audit purposes
     /// - Invalidated tokens: 1-hour retention for investigation
     pub fn cleanup_expired_tokens(&self) -> Result<TokenCleanupStats> {
-        let mut tokens = self.tokens.write()
+        let mut tokens = self
+            .tokens
+            .write()
             .map_err(|_| voting_error!("Token service write error"))?;
-        let mut voter_tokens = self.voter_tokens.write()
+        let mut voter_tokens = self
+            .voter_tokens
+            .write()
             .map_err(|_| voting_error!("Token service write error"))?;
 
         let initial_count = tokens.len();
@@ -638,7 +683,10 @@ impl VotingTokenService {
         if total_removed > 0 {
             tracing::info!(
                 "🧹 Token cleanup: removed {} tokens (expired: {}, used: {}, invalidated: {})",
-                total_removed, expired_count, used_count, invalidated_count
+                total_removed,
+                expired_count,
+                used_count,
+                invalidated_count
             );
         }
 
@@ -649,9 +697,13 @@ impl VotingTokenService {
     ///
     /// SECURITY: Provides operational visibility for monitoring and alerting
     pub fn get_stats(&self) -> Result<TokenServiceStats> {
-        let tokens = self.tokens.read()
+        let tokens = self
+            .tokens
+            .read()
             .map_err(|_| voting_error!("Token service read error"))?;
-        let voter_tokens = self.voter_tokens.read()
+        let voter_tokens = self
+            .voter_tokens
+            .read()
             .map_err(|_| voting_error!("Token service read error"))?;
 
         let total_tokens = tokens.len();
@@ -689,7 +741,9 @@ impl VotingTokenService {
 
     /// Get token by ID (for debugging)
     pub fn get_token(&self, token_id: &str) -> Result<Option<VotingToken>> {
-        let tokens = self.tokens.read()
+        let tokens = self
+            .tokens
+            .read()
             .map_err(|_| voting_error!("Token service read error"))?;
 
         Ok(tokens.get(token_id).cloned())
@@ -737,9 +791,8 @@ impl TokenCleanupService {
         token_service: std::sync::Arc<VotingTokenService>,
         stop_signal: tokio::sync::mpsc::Receiver<()>,
     ) -> Self {
-        let cleanup_interval = std::time::Duration::from_secs(
-            token_service.config.cleanup_interval_seconds
-        );
+        let cleanup_interval =
+            std::time::Duration::from_secs(token_service.config.cleanup_interval_seconds);
 
         Self {
             token_service,
@@ -790,12 +843,14 @@ mod tests {
         let election_id = Uuid::new_v4();
 
         // Issue token
-        let result = token_service.issue_token(
-            &salt_manager,
-            &voter_hash,
-            &election_id,
-            Some("session_123".to_string()),
-        ).unwrap();
+        let result = token_service
+            .issue_token(
+                &salt_manager,
+                &voter_hash,
+                &election_id,
+                Some("session_123".to_string()),
+            )
+            .unwrap();
 
         let token = match result {
             TokenResult::Issued(token) => token,
@@ -807,12 +862,9 @@ mod tests {
         assert!(token.is_usable());
 
         // Validate token
-        let validation_result = token_service.validate_token(
-            &salt_manager,
-            &token.token_id,
-            &voter_hash,
-            &election_id,
-        ).unwrap();
+        let validation_result = token_service
+            .validate_token(&salt_manager, &token.token_id, &voter_hash, &election_id)
+            .unwrap();
 
         match validation_result {
             TokenResult::Valid(_) => {
@@ -826,12 +878,9 @@ mod tests {
         assert_eq!(invalidation_result, TokenResult::Invalidated);
 
         // Should no longer be valid
-        let validation_after = token_service.validate_token(
-            &salt_manager,
-            &token.token_id,
-            &voter_hash,
-            &election_id,
-        ).unwrap();
+        let validation_after = token_service
+            .validate_token(&salt_manager, &token.token_id, &voter_hash, &election_id)
+            .unwrap();
 
         match validation_after {
             TokenResult::Invalid { .. } => {
@@ -849,13 +898,16 @@ mod tests {
         let election_id = Uuid::new_v4();
 
         // Issue maximum number of tokens
-        for i in 0..2 { // max_tokens_per_voter = 2 for testing
-            let result = token_service.issue_token(
-                &salt_manager,
-                &voter_hash,
-                &election_id,
-                Some(format!("session_{}", i)),
-            ).unwrap();
+        for i in 0..2 {
+            // max_tokens_per_voter = 2 for testing
+            let result = token_service
+                .issue_token(
+                    &salt_manager,
+                    &voter_hash,
+                    &election_id,
+                    Some(format!("session_{i}")),
+                )
+                .unwrap();
 
             match result {
                 TokenResult::Issued(_) => {
@@ -866,12 +918,14 @@ mod tests {
         }
 
         // Third token should fail
-        let result = token_service.issue_token(
-            &salt_manager,
-            &voter_hash,
-            &election_id,
-            Some("session_overflow".to_string()),
-        ).unwrap();
+        let result = token_service
+            .issue_token(
+                &salt_manager,
+                &voter_hash,
+                &election_id,
+                Some("session_overflow".to_string()),
+            )
+            .unwrap();
 
         match result {
             TokenResult::TooManyTokens { active_count } => {
@@ -890,12 +944,9 @@ mod tests {
         let election_id = Uuid::new_v4();
 
         // Issue token
-        let result = token_service.issue_token(
-            &salt_manager,
-            &voter_hash,
-            &election_id,
-            None,
-        ).unwrap();
+        let result = token_service
+            .issue_token(&salt_manager, &voter_hash, &election_id, None)
+            .unwrap();
 
         let token = match result {
             TokenResult::Issued(token) => token,
@@ -904,7 +955,9 @@ mod tests {
 
         // Mark as used
         let vote_id = Uuid::new_v4();
-        token_service.mark_token_used(&token.token_id, vote_id).unwrap();
+        token_service
+            .mark_token_used(&token.token_id, vote_id)
+            .unwrap();
 
         // Check stats before cleanup
         let stats_before = token_service.get_stats().unwrap();
@@ -926,22 +979,34 @@ mod tests {
         let election2 = Uuid::new_v4();
 
         // Issue tokens for different elections
-        let result1 = token_service.issue_token(&salt_manager, &voter_hash, &election1, None).unwrap();
-        let result2 = token_service.issue_token(&salt_manager, &voter_hash, &election2, None).unwrap();
+        let result1 = token_service
+            .issue_token(&salt_manager, &voter_hash, &election1, None)
+            .unwrap();
+        let result2 = token_service
+            .issue_token(&salt_manager, &voter_hash, &election2, None)
+            .unwrap();
 
-        let token1 = match result1 { TokenResult::Issued(t) => t, _ => panic!() };
-        let token2 = match result2 { TokenResult::Issued(t) => t, _ => panic!() };
+        let token1 = match result1 {
+            TokenResult::Issued(t) => t,
+            _ => panic!(),
+        };
+        let token2 = match result2 {
+            TokenResult::Issued(t) => t,
+            _ => panic!(),
+        };
 
         // Tokens should be different
         assert_ne!(token1.token_hash, token2.token_hash);
 
         // Token1 should not validate for election2
-        let cross_validation = token_service.validate_token(
-            &salt_manager,
-            &token1.token_id,
-            &voter_hash,
-            &election2, // Wrong election
-        ).unwrap();
+        let cross_validation = token_service
+            .validate_token(
+                &salt_manager,
+                &token1.token_id,
+                &voter_hash,
+                &election2, // Wrong election
+            )
+            .unwrap();
 
         match cross_validation {
             TokenResult::Invalid { .. } => {
@@ -959,14 +1024,24 @@ mod tests {
         let election_id = Uuid::new_v4();
 
         // Issue valid token
-        let token_result = token_service.issue_token(&salt_manager, &voter_hash, &election_id, None).unwrap();
-        let valid_token = match token_result { TokenResult::Issued(t) => t, _ => panic!() };
+        let token_result = token_service
+            .issue_token(&salt_manager, &voter_hash, &election_id, None)
+            .unwrap();
+        let valid_token = match token_result {
+            TokenResult::Issued(t) => t,
+            _ => panic!(),
+        };
 
         // Test valid token timing
         let mut valid_timings = Vec::new();
         for _ in 0..50 {
             let start = std::time::Instant::now();
-            let _result = token_service.validate_token(&salt_manager, &valid_token.token_id, &voter_hash, &election_id);
+            let _result = token_service.validate_token(
+                &salt_manager,
+                &valid_token.token_id,
+                &voter_hash,
+                &election_id,
+            );
             valid_timings.push(start.elapsed().as_nanos());
         }
 
@@ -974,19 +1049,26 @@ mod tests {
         let mut invalid_timings = Vec::new();
         for _ in 0..50 {
             let start = std::time::Instant::now();
-            let _result = token_service.validate_token(&salt_manager, "invalid_token_123", &voter_hash, &election_id);
+            let _result = token_service.validate_token(
+                &salt_manager,
+                "invalid_token_123",
+                &voter_hash,
+                &election_id,
+            );
             invalid_timings.push(start.elapsed().as_nanos());
         }
 
-        let valid_avg: f64 = valid_timings.iter().map(|&x| x as f64).sum::<f64>() / valid_timings.len() as f64;
-        let invalid_avg: f64 = invalid_timings.iter().map(|&x| x as f64).sum::<f64>() / invalid_timings.len() as f64;
+        let valid_avg: f64 =
+            valid_timings.iter().map(|&x| x as f64).sum::<f64>() / valid_timings.len() as f64;
+        let invalid_avg: f64 =
+            invalid_timings.iter().map(|&x| x as f64).sum::<f64>() / invalid_timings.len() as f64;
 
         println!("✅ Token validation timing resistance test:");
-        println!("   Valid token avg: {:.2}ns", valid_avg);
-        println!("   Invalid token avg: {:.2}ns", invalid_avg);
+        println!("   Valid token avg: {valid_avg:.2}ns");
+        println!("   Invalid token avg: {invalid_avg:.2}ns");
 
         let timing_difference_percent = ((valid_avg - invalid_avg).abs() / valid_avg) * 100.0;
-        println!("   Timing difference: {:.2}%", timing_difference_percent);
+        println!("   Timing difference: {timing_difference_percent:.2}%");
 
         // Should be improved with constant-time operations
         if timing_difference_percent < 20.0 {
@@ -1003,7 +1085,9 @@ mod tests {
         let election_id = Uuid::new_v4();
 
         // Test dummy token creation (used for timing consistency)
-        let dummy_token = token_service.create_dummy_token(&voter_hash, &election_id).unwrap();
+        let dummy_token = token_service
+            .create_dummy_token(&voter_hash, &election_id)
+            .unwrap();
 
         assert_eq!(dummy_token.voter_hash, voter_hash);
         assert_eq!(dummy_token.election_id, election_id);

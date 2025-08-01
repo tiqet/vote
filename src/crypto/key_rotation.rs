@@ -11,8 +11,8 @@
 //! - Integration with existing SecureKeyPair system
 //! - Comprehensive monitoring and logging
 
-use crate::{crypto_error, Result};
 use crate::crypto::SecureKeyPair;
+use crate::{Result, crypto_error};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -35,10 +35,10 @@ pub struct KeyRotationConfig {
 impl Default for KeyRotationConfig {
     fn default() -> Self {
         Self {
-            rotation_interval: 86400,    // 24 hours
-            overlap_period: 3600,       // 1 hour overlap
-            check_interval: 3600,       // Check every hour
-            max_previous_keys: 3,       // Keep 3 previous keys
+            rotation_interval: 86400, // 24 hours
+            overlap_period: 3600,     // 1 hour overlap
+            check_interval: 3600,     // Check every hour
+            max_previous_keys: 3,     // Keep 3 previous keys
         }
     }
 }
@@ -47,21 +47,25 @@ impl KeyRotationConfig {
     /// Create configuration for testing with shorter intervals
     pub fn for_testing() -> Self {
         Self {
-            rotation_interval: 300,     // 5 minutes
-            overlap_period: 60,        // 1 minute overlap
-            check_interval: 30,        // Check every 30 seconds
-            max_previous_keys: 2,      // Keep 2 previous keys
+            rotation_interval: 300, // 5 minutes
+            overlap_period: 60,     // 1 minute overlap
+            check_interval: 30,     // Check every 30 seconds
+            max_previous_keys: 2,   // Keep 2 previous keys
         }
     }
 
     /// Validate configuration parameters
     pub fn validate(&self) -> Result<()> {
         if self.overlap_period >= self.rotation_interval {
-            return Err(crypto_error!("Overlap period must be less than rotation interval"));
+            return Err(crypto_error!(
+                "Overlap period must be less than rotation interval"
+            ));
         }
 
         if self.check_interval > self.rotation_interval / 2 {
-            return Err(crypto_error!("Check interval should be much smaller than rotation interval"));
+            return Err(crypto_error!(
+                "Check interval should be much smaller than rotation interval"
+            ));
         }
 
         if self.max_previous_keys == 0 {
@@ -89,10 +93,10 @@ pub struct KeyRotationEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RotationEventType {
-    Scheduled,      // Normal scheduled rotation
-    Emergency,      // Emergency rotation (key compromise)
-    Manual,         // Manual rotation triggered by admin
-    Startup,        // Initial key generation at startup
+    Scheduled, // Normal scheduled rotation
+    Emergency, // Emergency rotation (key compromise)
+    Manual,    // Manual rotation triggered by admin
+    Startup,   // Initial key generation at startup
 }
 
 /// Key with metadata for rotation management
@@ -148,11 +152,7 @@ impl ManagedKey {
             .unwrap_or_default()
             .as_secs();
 
-        if now >= self.rotation_due_at {
-            0
-        } else {
-            self.rotation_due_at - now
-        }
+        self.rotation_due_at.saturating_sub(now)
     }
 }
 
@@ -186,15 +186,12 @@ impl KeyRotationManager {
         config.validate()?;
 
         // Generate initial key
-        let initial_key = SecureKeyPair::generate_with_expiration(
-            Some(config.rotation_interval + config.overlap_period)
-        )?;
+        let initial_key = SecureKeyPair::generate_with_expiration(Some(
+            config.rotation_interval + config.overlap_period,
+        ))?;
 
-        let managed_key = ManagedKey::new(
-            initial_key,
-            config.rotation_interval,
-            config.overlap_period
-        )?;
+        let managed_key =
+            ManagedKey::new(initial_key, config.rotation_interval, config.overlap_period)?;
 
         // Log initial key generation
         let startup_event = KeyRotationEvent {
@@ -239,8 +236,12 @@ impl KeyRotationManager {
             let old_key_id = current.key_id;
             drop(current); // Release read lock before rotation
 
-            self.perform_rotation(RotationEventType::Scheduled, old_key_id,
-                                  "Scheduled rotation due to age").await?;
+            self.perform_rotation(
+                RotationEventType::Scheduled,
+                old_key_id,
+                "Scheduled rotation due to age",
+            )
+            .await?;
             Ok(true)
         } else {
             Ok(false)
@@ -254,7 +255,8 @@ impl KeyRotationManager {
             current.key_id
         };
 
-        self.perform_rotation(RotationEventType::Emergency, old_key_id, reason).await?;
+        self.perform_rotation(RotationEventType::Emergency, old_key_id, reason)
+            .await?;
 
         let mut emergency_count = self.emergency_rotations.write().await;
         *emergency_count += 1;
@@ -271,7 +273,8 @@ impl KeyRotationManager {
             current.key_id
         };
 
-        self.perform_rotation(RotationEventType::Manual, old_key_id, reason).await?;
+        self.perform_rotation(RotationEventType::Manual, old_key_id, reason)
+            .await?;
 
         tracing::info!("🔄 Manual key rotation completed: reason={}", reason);
 
@@ -283,12 +286,12 @@ impl KeyRotationManager {
         &self,
         event_type: RotationEventType,
         old_key_id: Uuid,
-        reason: &str
+        reason: &str,
     ) -> Result<()> {
         // Generate new key
-        let new_key = SecureKeyPair::generate_with_expiration(
-            Some(self.config.rotation_interval + self.config.overlap_period)
-        )?;
+        let new_key = SecureKeyPair::generate_with_expiration(Some(
+            self.config.rotation_interval + self.config.overlap_period,
+        ))?;
 
         let new_managed_key = ManagedKey::new(
             new_key,
@@ -367,22 +370,32 @@ impl KeyRotationManager {
     pub async fn verify(&self, message: &[u8], signature: &[u8; 64], timestamp: u64) -> Result<()> {
         // Try current key first
         let current = self.current_key.read().await;
-        if current.key.verify_with_timestamp(message, signature, timestamp, 300).is_ok() {
+        if current
+            .key
+            .verify_with_timestamp(message, signature, timestamp, 300)
+            .is_ok()
+        {
             return Ok(());
         }
         drop(current);
 
         // Try previous keys
         let previous = self.previous_keys.read().await;
-        for prev_key in previous.iter().rev() { // Try most recent first
-            if !prev_key.is_expired() {
-                if prev_key.key.verify_with_timestamp(message, signature, timestamp, 300).is_ok() {
-                    return Ok(());
-                }
+        for prev_key in previous.iter().rev() {
+            // Try most recent first
+            if !prev_key.is_expired()
+                && prev_key
+                    .key
+                    .verify_with_timestamp(message, signature, timestamp, 300)
+                    .is_ok()
+            {
+                return Ok(());
             }
         }
 
-        Err(crypto_error!("Signature verification failed with all available keys"))
+        Err(crypto_error!(
+            "Signature verification failed with all available keys"
+        ))
     }
 
     /// Get current public key
@@ -410,7 +423,7 @@ impl KeyRotationManager {
         let last_rotation_timestamp = events
             .iter()
             .filter(|e| !matches!(e.event_type, RotationEventType::Startup))
-            .last()
+            .next_back()
             .map(|e| e.timestamp);
 
         // Health checks and warnings
@@ -423,7 +436,8 @@ impl KeyRotationManager {
         } else if time_until_rotation == 0 {
             warnings.push("Key rotation is overdue".to_string());
             is_healthy = false;
-        } else if time_until_rotation < 3600 { // Less than 1 hour
+        } else if time_until_rotation < 3600 {
+            // Less than 1 hour
             warnings.push("Key rotation due soon".to_string());
         }
 
@@ -432,7 +446,9 @@ impl KeyRotationManager {
         }
 
         if emergency_rotations > 0 {
-            warnings.push(format!("System has {} emergency rotations", emergency_rotations));
+            warnings.push(format!(
+                "System has {emergency_rotations} emergency rotations"
+            ));
         }
 
         KeyRotationStats {
@@ -451,11 +467,7 @@ impl KeyRotationManager {
     /// Get recent rotation events
     pub async fn get_recent_events(&self, limit: usize) -> Vec<KeyRotationEvent> {
         let events = self.rotation_events.read().await;
-        events.iter()
-            .rev()
-            .take(limit)
-            .cloned()
-            .collect()
+        events.iter().rev().take(limit).cloned().collect()
     }
 
     /// Clean up expired previous keys
@@ -498,7 +510,10 @@ impl KeyRotationService {
         let check_interval = self.manager.config.check_interval;
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(check_interval));
 
-        tracing::info!("🔄 Key rotation service started (check interval: {}s)", check_interval);
+        tracing::info!(
+            "🔄 Key rotation service started (check interval: {}s)",
+            check_interval
+        );
 
         loop {
             tokio::select! {
@@ -506,7 +521,7 @@ impl KeyRotationService {
                     if let Err(e) = self.check_and_rotate().await {
                         tracing::error!("❌ Key rotation check failed: {}", e);
                     }
-                    
+
                     if let Err(e) = self.manager.cleanup_expired_keys().await {
                         tracing::error!("❌ Key cleanup failed: {}", e);
                     }
@@ -531,7 +546,10 @@ impl KeyRotationService {
         // Check system health
         let stats = self.manager.get_stats().await;
         if !stats.is_healthy {
-            tracing::warn!("⚠️  Key rotation system health issues: {:?}", stats.warnings);
+            tracing::warn!(
+                "⚠️  Key rotation system health issues: {:?}",
+                stats.warnings
+            );
         }
 
         Ok(())
@@ -541,7 +559,7 @@ impl KeyRotationService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     #[tokio::test]
     async fn test_key_rotation_manager_creation() {
@@ -562,7 +580,10 @@ mod tests {
         let (signature, timestamp) = manager.sign(message).await.unwrap();
 
         // Should verify with current key
-        manager.verify(message, &signature, timestamp).await.unwrap();
+        manager
+            .verify(message, &signature, timestamp)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -593,7 +614,10 @@ mod tests {
         manager.manual_rotation("Test").await.unwrap();
 
         // Should still verify with previous key
-        manager.verify(message, &signature, timestamp).await.unwrap();
+        manager
+            .verify(message, &signature, timestamp)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -603,7 +627,10 @@ mod tests {
         let stats_before = manager.get_stats().await;
         assert_eq!(stats_before.emergency_rotations, 0);
 
-        manager.emergency_rotation("Key compromise detected").await.unwrap();
+        manager
+            .emergency_rotation("Key compromise detected")
+            .await
+            .unwrap();
 
         let stats_after = manager.get_stats().await;
         assert_eq!(stats_after.emergency_rotations, 1);
@@ -636,8 +663,8 @@ mod tests {
     async fn test_automatic_rotation_due_detection() {
         // Create manager with very short rotation interval
         let config = KeyRotationConfig {
-            rotation_interval: 2,  // 2 seconds
-            overlap_period: 1,     // 1 second overlap (must be < rotation_interval)
+            rotation_interval: 2, // 2 seconds
+            overlap_period: 1,    // 1 second overlap (must be < rotation_interval)
             check_interval: 1,
             max_previous_keys: 2,
         };
@@ -670,7 +697,10 @@ mod tests {
 
         // Perform multiple rotations
         for i in 1..=5 {
-            manager.manual_rotation(&format!("Rotation {}", i)).await.unwrap();
+            manager
+                .manual_rotation(&format!("Rotation {i}"))
+                .await
+                .unwrap();
         }
 
         let stats = manager.get_stats().await;

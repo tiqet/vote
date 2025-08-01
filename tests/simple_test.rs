@@ -1,16 +1,15 @@
 //! Simple test to verify compilation and token-secured functionality
 
 use chrono::Utc;
-use uuid::Uuid;
 use std::sync::Arc;
+use uuid::Uuid;
 use vote::{
     Result,
     config::Config,
     crypto::{
-        CryptoRateLimiter, SecureKeyPair, SecureMemory, SecureSaltManager,
-        VotingCompletion, VotingStatus, TokenGenerator, CryptoUtils,
-        VotingTokenService, TokenResult, TokenConfig,
-        voting_lock::{VotingLockService, VotingMethod, LockResult}
+        CryptoRateLimiter, CryptoUtils, SecureKeyPair, SecureMemory, SecureSaltManager,
+        TokenGenerator, TokenResult, VotingTokenService,
+        voting_lock::{LockResult, VotingLockService, VotingMethod},
     },
     types::Election,
 };
@@ -44,7 +43,8 @@ async fn test_basic_compilation_with_tokens() -> Result<()> {
         .unwrap()
         .as_secs();
 
-    let voter_hash = salt_manager.hash_voter_identity_secure(bank_id, &election_id, current_timestamp, 300)?;
+    let voter_hash =
+        salt_manager.hash_voter_identity_secure(bank_id, &election_id, current_timestamp, 300)?;
     let voter_hash_str = hex::encode(voter_hash);
     println!("✅ Secure salt manager works");
 
@@ -104,7 +104,8 @@ async fn test_basic_compilation_with_tokens() -> Result<()> {
 
     // Test secure voting token generation
     let expires_at = current_timestamp + 3600;
-    let (secure_token_hash, nonce) = salt_manager.generate_voting_token_secure(&voter_hash, &election_id, expires_at)?;
+    let (secure_token_hash, nonce) =
+        salt_manager.generate_voting_token_secure(&voter_hash, &election_id, expires_at)?;
 
     // Validate the secure token
     let secure_validation = salt_manager.validate_voting_token_secure(
@@ -149,8 +150,12 @@ async fn test_basic_compilation_with_tokens() -> Result<()> {
 
     // Test voting completion with token cleanup
     let vote_id = Uuid::new_v4();
-    let completion = lock_service.complete_voting_with_token_cleanup(&voting_lock, Some(vote_id))?;
-    println!("✅ Voting completion with token cleanup: {}", completion.completion_id);
+    let completion =
+        lock_service.complete_voting_with_token_cleanup(&voting_lock, Some(vote_id))?;
+    println!(
+        "✅ Voting completion with token cleanup: {}",
+        completion.completion_id
+    );
 
     // Test that token is now invalid
     let post_vote_validation = token_service.validate_token(
@@ -162,16 +167,26 @@ async fn test_basic_compilation_with_tokens() -> Result<()> {
 
     match post_vote_validation {
         TokenResult::Invalid { reason } => {
-            println!("✅ Token correctly invalidated after voting: {}", reason);
+            println!("✅ Token correctly invalidated after voting: {reason}");
         }
         _ => panic!("Expected token to be invalid after voting"),
     }
 
     // Test double voting prevention
-    let new_token_result = token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None)?;
-    let new_token = match new_token_result { TokenResult::Issued(t) => t, _ => panic!("Should issue new token") };
+    let new_token_result =
+        token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None)?;
+    let new_token = match new_token_result {
+        TokenResult::Issued(t) => t,
+        _ => panic!("Should issue new token"),
+    };
 
-    let second_attempt = lock_service.acquire_lock_with_token(&salt_manager, &new_token.token_id, &voter_hash_str, &election_id, VotingMethod::Analog)?;
+    let second_attempt = lock_service.acquire_lock_with_token(
+        &salt_manager,
+        &new_token.token_id,
+        &voter_hash_str,
+        &election_id,
+        VotingMethod::Analog,
+    )?;
     match second_attempt {
         LockResult::AlreadyVoted { .. } => {
             println!("✅ Double voting correctly prevented despite new token");
@@ -258,18 +273,38 @@ async fn test_logout_scenarios() -> Result<()> {
     println!("\n🔒 SCENARIO 1: Logout during active voting session");
 
     // Login and start voting
-    let token_result = token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, Some("logout_test_session".to_string()))?;
-    let token = match token_result { TokenResult::Issued(t) => t, _ => panic!() };
+    let token_result = token_service.issue_token(
+        &salt_manager,
+        &voter_hash_str,
+        &election_id,
+        Some("logout_test_session".to_string()),
+    )?;
+    let token = match token_result {
+        TokenResult::Issued(t) => t,
+        _ => panic!(),
+    };
 
-    let lock_result = lock_service.acquire_lock_with_token(&salt_manager, &token.token_id, &voter_hash_str, &election_id, VotingMethod::Digital)?;
-    let _voting_lock = match lock_result { LockResult::Acquired(l) => l, _ => panic!() };
+    let lock_result = lock_service.acquire_lock_with_token(
+        &salt_manager,
+        &token.token_id,
+        &voter_hash_str,
+        &election_id,
+        VotingMethod::Digital,
+    )?;
+    let _voting_lock = match lock_result {
+        LockResult::Acquired(l) => l,
+        _ => panic!(),
+    };
 
     println!("✅ Voting session started");
 
     // Logout during voting
     let logout_result = lock_service.logout_voter(&voter_hash_str, &election_id)?;
     println!("✅ Logout completed:");
-    println!("   Tokens invalidated: {}", logout_result.invalidated_tokens);
+    println!(
+        "   Tokens invalidated: {}",
+        logout_result.invalidated_tokens
+    );
     println!("   Lock released: {}", logout_result.released_lock);
 
     assert!(logout_result.invalidated_tokens > 0);
@@ -279,14 +314,25 @@ async fn test_logout_scenarios() -> Result<()> {
     println!("\n🚪 SCENARIO 2: Logout without voting");
 
     let voter2_hash_str = hex::encode([2u8; 32]);
-    let token2_result = token_service.issue_token(&salt_manager, &voter2_hash_str, &election_id, Some("no_vote_session".to_string()))?;
-    let _token2 = match token2_result { TokenResult::Issued(t) => t, _ => panic!() };
+    let token2_result = token_service.issue_token(
+        &salt_manager,
+        &voter2_hash_str,
+        &election_id,
+        Some("no_vote_session".to_string()),
+    )?;
+    let _token2 = match token2_result {
+        TokenResult::Issued(t) => t,
+        _ => panic!(),
+    };
 
     println!("✅ Login without voting");
 
     let logout2_result = lock_service.logout_voter(&voter2_hash_str, &election_id)?;
     println!("✅ Logout without voting:");
-    println!("   Tokens invalidated: {}", logout2_result.invalidated_tokens);
+    println!(
+        "   Tokens invalidated: {}",
+        logout2_result.invalidated_tokens
+    );
     println!("   Lock released: {}", logout2_result.released_lock);
 
     assert!(logout2_result.invalidated_tokens > 0);

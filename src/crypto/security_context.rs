@@ -13,18 +13,21 @@
 //! - Integration with all crypto security components
 //! - Banking-grade security event correlation
 
-use crate::{crypto_error, voting_error, Result};
 use crate::crypto::{
-    SecureSaltManager, VotingTokenService, VotingLockService,
-    key_rotation::KeyRotationManager, CryptoRateLimiter,
-    voting_lock::{VotingMethod, LockResult},
+    CryptoRateLimiter, SecureSaltManager, VotingLockService, VotingTokenService,
+    audit::{AuditConfig, AuditQuery, ComplianceLevel, EnhancedAuditSystem},
+    key_rotation::KeyRotationManager,
+    security_monitoring::{
+        SecurityMonitoringConfig, SecurityOperation, SecurityPerformanceMonitor, SecurityTimer,
+        SecurityTimingContext,
+    },
+    voting_lock::{LockResult, VotingMethod},
     voting_token::{TokenResult, VotingToken},
-    audit::{EnhancedAuditSystem, AuditConfig, ComplianceLevel, AuditQuery},
-    security_monitoring::{SecurityPerformanceMonitor, SecurityOperation, SecurityTimingContext, SecurityTimer, SecurityMonitoringConfig},
 };
+use crate::{Result, crypto_error, voting_error};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, RwLock, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -174,9 +177,9 @@ pub struct SecuritySession {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SecurityLevel {
     Standard,
-    Elevated,  // After failed attempts or suspicious activity
-    High,      // Multiple security incidents
-    Locked,    // Temporarily locked due to security concerns
+    Elevated, // After failed attempts or suspicious activity
+    High,     // Multiple security incidents
+    Locked,   // Temporarily locked due to security concerns
 }
 
 /// Security metrics for monitoring and alerting
@@ -367,15 +370,18 @@ impl SecurityContext {
 
         // Check rate limiting
         {
-            let mut rate_limiter = self.rate_limiter.lock()
+            let mut rate_limiter = self
+                .rate_limiter
+                .lock()
                 .map_err(|_| crypto_error!("Rate limiter lock error"))?;
 
-            if let Err(_) = rate_limiter.check_rate_limit() {
+            if rate_limiter.check_rate_limit().is_err() {
                 self.log_security_event(SecurityEvent::RateLimitExceeded {
                     voter_hash: "rate_limited".to_string(),
                     operation: "login".to_string(),
                     timestamp: self.current_timestamp(),
-                }).await;
+                })
+                .await;
 
                 return Ok(SecurityLoginResult::RateLimited);
             }
@@ -384,11 +390,19 @@ impl SecurityContext {
         // Generate voter hash
         let current_time = self.current_timestamp();
         let voter_hash = match self.salt_manager.hash_voter_identity_secure(
-            bank_id, election_id, current_time, 300
+            bank_id,
+            election_id,
+            current_time,
+            300,
         ) {
             Ok(hash) => hex::encode(hash),
             Err(e) => {
-                self.log_failed_attempt(&format!("voter_hash_gen:{}", bank_id), "hash_generation_failed", &e.to_string()).await;
+                self.log_failed_attempt(
+                    &format!("voter_hash_gen:{bank_id}"),
+                    "hash_generation_failed",
+                    &e.to_string(),
+                )
+                .await;
                 return Err(e);
             }
         };
@@ -411,11 +425,12 @@ impl SecurityContext {
                     success: false,
                     timestamp: current_time,
                     ip_address: ip_address.clone(),
-                }).await;
+                })
+                .await;
 
                 let _ = timer.finish(false, &self.performance_monitor).await;
                 return Ok(SecurityLoginResult::SecurityLocked {
-                    reason: "Account temporarily locked due to security concerns".to_string()
+                    reason: "Account temporarily locked due to security concerns".to_string(),
                 });
             }
         }
@@ -429,7 +444,8 @@ impl SecurityContext {
         ) {
             Ok(result) => result,
             Err(e) => {
-                self.log_failed_attempt(&voter_hash, "token_issuance", &e.to_string()).await;
+                self.log_failed_attempt(&voter_hash, "token_issuance", &e.to_string())
+                    .await;
 
                 self.log_security_event(SecurityEvent::LoginAttempt {
                     voter_hash: voter_hash.clone(),
@@ -438,7 +454,8 @@ impl SecurityContext {
                     success: false,
                     timestamp: current_time,
                     ip_address,
-                }).await;
+                })
+                .await;
 
                 let _ = timer.finish(false, &self.performance_monitor).await;
                 return Err(e);
@@ -455,7 +472,8 @@ impl SecurityContext {
                     success: false,
                     timestamp: current_time,
                     ip_address,
-                }).await;
+                })
+                .await;
 
                 let _ = timer.finish(false, &self.performance_monitor).await;
                 return Ok(SecurityLoginResult::TooManyTokens { active_count });
@@ -483,10 +501,12 @@ impl SecurityContext {
 
         // Store session
         {
-            let mut sessions = self.active_sessions.write()
+            let mut sessions = self
+                .active_sessions
+                .write()
                 .map_err(|_| crypto_error!("Session storage write error"))?;
 
-            let session_key = format!("{}:{}", voter_hash, election_id);
+            let session_key = format!("{voter_hash}:{election_id}");
             sessions.insert(session_key, security_session);
         }
 
@@ -498,7 +518,8 @@ impl SecurityContext {
             success: true,
             timestamp: current_time,
             ip_address,
-        }).await;
+        })
+        .await;
 
         self.log_security_event(SecurityEvent::TokenIssued {
             voter_hash: voter_hash.clone(),
@@ -506,7 +527,8 @@ impl SecurityContext {
             token_id: voting_token.token_id.clone(),
             session_id: Some(session_id.clone()),
             timestamp: current_time,
-        }).await;
+        })
+        .await;
 
         // Update metrics and complete performance timing
         self.update_auth_metrics(start_time, true).await;
@@ -537,7 +559,8 @@ impl SecurityContext {
         let current_time = self.current_timestamp();
 
         // Update session activity
-        self.update_session_activity(voter_hash, election_id).await?;
+        self.update_session_activity(voter_hash, election_id)
+            .await?;
 
         // Validate token with security logging
         let token_validation = self.token_service.validate_token(
@@ -555,7 +578,8 @@ impl SecurityContext {
                     token_id: token_id.to_string(),
                     success: true,
                     timestamp: current_time,
-                }).await;
+                })
+                .await;
                 token
             }
             TokenResult::Invalid { reason } => {
@@ -565,13 +589,14 @@ impl SecurityContext {
                     token_id: token_id.to_string(),
                     success: false,
                     timestamp: current_time,
-                }).await;
+                })
+                .await;
 
                 return Ok(SecurityVoteResult::InvalidToken { reason });
             }
             _ => {
                 return Ok(SecurityVoteResult::InvalidToken {
-                    reason: "Unexpected token validation result".to_string()
+                    reason: "Unexpected token validation result".to_string(),
                 });
             }
         };
@@ -588,7 +613,12 @@ impl SecurityContext {
         match lock_result {
             LockResult::Acquired(lock) => {
                 // Update session with voting method
-                self.update_session_voting_method(voter_hash, election_id, Some(voting_method.clone())).await?;
+                self.update_session_voting_method(
+                    voter_hash,
+                    election_id,
+                    Some(voting_method.clone()),
+                )
+                .await?;
 
                 self.log_security_event(SecurityEvent::VotingLockAcquired {
                     voter_hash: voter_hash.to_string(),
@@ -597,12 +627,16 @@ impl SecurityContext {
                     token_id: token_id.to_string(),
                     lock_id: lock.lock_id,
                     timestamp: current_time,
-                }).await;
+                })
+                .await;
 
                 Ok(SecurityVoteResult::LockAcquired { lock })
             }
-            LockResult::AlreadyVoted { completion, original_method } => {
-                let reason = format!("Already voted via {:?}", original_method);
+            LockResult::AlreadyVoted {
+                completion,
+                original_method,
+            } => {
+                let reason = format!("Already voted via {original_method:?}");
 
                 self.log_security_event(SecurityEvent::VotingBlocked {
                     voter_hash: voter_hash.to_string(),
@@ -610,15 +644,28 @@ impl SecurityContext {
                     reason: reason.clone(),
                     attempted_method: voting_method.clone(),
                     timestamp: current_time,
-                }).await;
+                })
+                .await;
 
                 // Detect potential double voting attempt (security incident)
-                self.detect_double_voting_incident(voter_hash, election_id, &original_method, &voting_method).await;
+                self.detect_double_voting_incident(
+                    voter_hash,
+                    election_id,
+                    &original_method,
+                    &voting_method,
+                )
+                .await;
 
-                Ok(SecurityVoteResult::AlreadyVoted { completion, original_method })
+                Ok(SecurityVoteResult::AlreadyVoted {
+                    completion,
+                    original_method,
+                })
             }
-            LockResult::AlreadyLocked { existing_lock, conflict_method } => {
-                let reason = format!("Concurrent voting session active via {:?}", conflict_method);
+            LockResult::AlreadyLocked {
+                existing_lock,
+                conflict_method,
+            } => {
+                let reason = format!("Concurrent voting session active via {conflict_method:?}");
 
                 self.log_security_event(SecurityEvent::VotingBlocked {
                     voter_hash: voter_hash.to_string(),
@@ -626,12 +673,17 @@ impl SecurityContext {
                     reason: reason.clone(),
                     attempted_method: voting_method.clone(),
                     timestamp: current_time,
-                }).await;
+                })
+                .await;
 
-                Ok(SecurityVoteResult::ConcurrentVoting { existing_lock, conflict_method })
+                Ok(SecurityVoteResult::ConcurrentVoting {
+                    existing_lock,
+                    conflict_method,
+                })
             }
             LockResult::InvalidToken { reason } => {
-                self.log_failed_attempt(voter_hash, "voting_lock_acquisition", &reason).await;
+                self.log_failed_attempt(voter_hash, "voting_lock_acquisition", &reason)
+                    .await;
                 Ok(SecurityVoteResult::InvalidToken { reason })
             }
             LockResult::ExpiredLockRemoved(lock) => {
@@ -642,7 +694,8 @@ impl SecurityContext {
                     token_id: token_id.to_string(),
                     lock_id: lock.lock_id,
                     timestamp: current_time,
-                }).await;
+                })
+                .await;
 
                 Ok(SecurityVoteResult::LockAcquired { lock })
             }
@@ -658,7 +711,9 @@ impl SecurityContext {
         let current_time = self.current_timestamp();
 
         // Complete voting through lock service (this invalidates the token)
-        let completion = self.lock_service.complete_voting_with_token_cleanup(lock, vote_id)?;
+        let completion = self
+            .lock_service
+            .complete_voting_with_token_cleanup(lock, vote_id)?;
 
         // Log completion event
         self.log_security_event(SecurityEvent::VotingCompleted {
@@ -668,7 +723,8 @@ impl SecurityContext {
             vote_id,
             completion_id: completion.completion_id,
             timestamp: current_time,
-        }).await;
+        })
+        .await;
 
         // Log token invalidation (since complete_voting_with_token_cleanup invalidates the token)
         self.log_security_event(SecurityEvent::TokenInvalidated {
@@ -677,14 +733,18 @@ impl SecurityContext {
             token_id: lock.token_id.clone(),
             reason: "Token invalidated after vote completion".to_string(),
             timestamp: current_time,
-        }).await;
+        })
+        .await;
 
         // Update session
-        self.update_session_voting_method(&lock.voter_hash, &lock.election_id, None).await?;
+        self.update_session_voting_method(&lock.voter_hash, &lock.election_id, None)
+            .await?;
 
         // Update metrics
         {
-            let mut metrics = self.security_metrics.write()
+            let mut metrics = self
+                .security_metrics
+                .write()
                 .map_err(|_| crypto_error!("Metrics write error"))?;
             metrics.votes_completed += 1;
             metrics.tokens_invalidated += 1; // Track token invalidation from voting completion
@@ -713,10 +773,12 @@ impl SecurityContext {
 
         // Remove session
         {
-            let mut sessions = self.active_sessions.write()
+            let mut sessions = self
+                .active_sessions
+                .write()
                 .map_err(|_| crypto_error!("Session storage write error"))?;
 
-            let session_key = format!("{}:{}", voter_hash, election_id);
+            let session_key = format!("{voter_hash}:{election_id}");
             sessions.remove(&session_key);
         }
 
@@ -727,11 +789,14 @@ impl SecurityContext {
             tokens_invalidated: logout_result.invalidated_tokens,
             lock_released: logout_result.released_lock,
             timestamp: current_time,
-        }).await;
+        })
+        .await;
 
         // Update metrics
         {
-            let mut metrics = self.security_metrics.write()
+            let mut metrics = self
+                .security_metrics
+                .write()
                 .map_err(|_| crypto_error!("Metrics write error"))?;
             metrics.tokens_invalidated += logout_result.invalidated_tokens as u64;
         }
@@ -752,7 +817,9 @@ impl SecurityContext {
         voter_hash: &str,
         election_id: &Uuid,
     ) -> Result<SecurityStatus> {
-        let voting_status = self.lock_service.get_voting_status(voter_hash, election_id)?;
+        let voting_status = self
+            .lock_service
+            .get_voting_status(voter_hash, election_id)?;
         let session = self.get_session(voter_hash, election_id).await?;
         let failed_attempts = self.get_failed_attempts_count(voter_hash).await;
         let recent_events = self.get_recent_security_events(voter_hash, 10).await;
@@ -768,20 +835,25 @@ impl SecurityContext {
 
     /// Get comprehensive security metrics
     pub async fn get_security_metrics(&self) -> Result<SecurityMetrics> {
-        let metrics = self.security_metrics.read()
+        let metrics = self
+            .security_metrics
+            .read()
             .map_err(|_| crypto_error!("Metrics read error"))?;
 
         let mut updated_metrics = metrics.clone();
 
         // Calculate real-time metrics
         let active_sessions = {
-            let sessions = self.active_sessions.read()
+            let sessions = self
+                .active_sessions
+                .read()
                 .map_err(|_| crypto_error!("Session read error"))?;
             sessions.len() as u64
         };
 
         updated_metrics.active_sessions = active_sessions;
-        updated_metrics.system_security_score = self.calculate_system_security_score(&updated_metrics);
+        updated_metrics.system_security_score =
+            self.calculate_system_security_score(&updated_metrics);
 
         Ok(updated_metrics)
     }
@@ -811,18 +883,26 @@ impl SecurityContext {
         let correlation_id = self.generate_correlation_id(&event);
 
         // Log to enhanced audit system
-        if let Err(e) = self.audit_system.log_security_event(
-            event.clone(),
-            Some(compliance_level),
-            correlation_id,
-        ).await {
+        if let Err(e) = self
+            .audit_system
+            .log_security_event(event.clone(), Some(compliance_level), correlation_id)
+            .await
+        {
             tracing::error!("Failed to log security event to audit system: {}", e);
         }
 
         // Log to tracing system for immediate visibility
         match event {
-            SecurityEvent::SecurityIncident { incident_type, severity, .. } => {
-                tracing::warn!("🚨 Security incident: {:?} (severity: {:?})", incident_type, severity);
+            SecurityEvent::SecurityIncident {
+                incident_type,
+                severity,
+                ..
+            } => {
+                tracing::warn!(
+                    "🚨 Security incident: {:?} (severity: {:?})",
+                    incident_type,
+                    severity
+                );
             }
             SecurityEvent::LoginAttempt { success: false, .. } => {
                 tracing::warn!("🔐 Failed login attempt");
@@ -847,7 +927,7 @@ impl SecurityContext {
 
         {
             let mut failed_attempts = self.failed_attempts.write().unwrap();
-            let attempts = failed_attempts.entry(identifier.to_string()).or_insert_with(VecDeque::new);
+            let attempts = failed_attempts.entry(identifier.to_string()).or_default();
 
             attempts.push_back(failed_attempt);
 
@@ -862,23 +942,23 @@ impl SecurityContext {
             }
 
             // Check for incident
-            if attempts.len() >= self.config.max_failed_attempts {
-                if self.config.incident_detection_enabled {
-                    let incident_id = Uuid::new_v4();
-                    let incident_event = SecurityEvent::SecurityIncident {
-                        incident_id,
-                        incident_type: SecurityIncidentType::RepeatedFailedAuthentication,
-                        voter_hash: identifier.to_string(),
-                        description: format!("Too many failed {} attempts", operation),
-                        severity: SecuritySeverity::High,
-                        timestamp: current_time,
-                    };
+            if attempts.len() >= self.config.max_failed_attempts
+                && self.config.incident_detection_enabled
+            {
+                let incident_id = Uuid::new_v4();
+                let incident_event = SecurityEvent::SecurityIncident {
+                    incident_id,
+                    incident_type: SecurityIncidentType::RepeatedFailedAuthentication,
+                    voter_hash: identifier.to_string(),
+                    description: format!("Too many failed {operation} attempts"),
+                    severity: SecuritySeverity::High,
+                    timestamp: current_time,
+                };
 
-                    self.log_security_event(incident_event).await;
+                self.log_security_event(incident_event).await;
 
-                    if self.config.auto_response_enabled {
-                        self.escalate_security_level(identifier).await;
-                    }
+                if self.config.auto_response_enabled {
+                    self.escalate_security_level(identifier).await;
                 }
             }
         }
@@ -902,7 +982,9 @@ impl SecurityContext {
                 incident_id: Uuid::new_v4(),
                 incident_type: SecurityIncidentType::DoubleVotingAttempt,
                 voter_hash: voter_hash.to_string(),
-                description: format!("Attempted {:?} voting after {:?} completion", attempted_method, original_method),
+                description: format!(
+                    "Attempted {attempted_method:?} voting after {original_method:?} completion"
+                ),
                 severity: SecuritySeverity::Critical,
                 timestamp: self.current_timestamp(),
             };
@@ -928,19 +1010,27 @@ impl SecurityContext {
         }
     }
 
-    async fn get_session(&self, voter_hash: &str, election_id: &Uuid) -> Result<Option<SecuritySession>> {
-        let sessions = self.active_sessions.read()
+    async fn get_session(
+        &self,
+        voter_hash: &str,
+        election_id: &Uuid,
+    ) -> Result<Option<SecuritySession>> {
+        let sessions = self
+            .active_sessions
+            .read()
             .map_err(|_| crypto_error!("Session read error"))?;
 
-        let session_key = format!("{}:{}", voter_hash, election_id);
+        let session_key = format!("{voter_hash}:{election_id}");
         Ok(sessions.get(&session_key).cloned())
     }
 
     async fn update_session_activity(&self, voter_hash: &str, election_id: &Uuid) -> Result<()> {
-        let mut sessions = self.active_sessions.write()
+        let mut sessions = self
+            .active_sessions
+            .write()
             .map_err(|_| crypto_error!("Session write error"))?;
 
-        let session_key = format!("{}:{}", voter_hash, election_id);
+        let session_key = format!("{voter_hash}:{election_id}");
         if let Some(session) = sessions.get_mut(&session_key) {
             session.last_activity = self.current_timestamp();
         }
@@ -954,10 +1044,12 @@ impl SecurityContext {
         election_id: &Uuid,
         voting_method: Option<VotingMethod>,
     ) -> Result<()> {
-        let mut sessions = self.active_sessions.write()
+        let mut sessions = self
+            .active_sessions
+            .write()
             .map_err(|_| crypto_error!("Session write error"))?;
 
-        let session_key = format!("{}:{}", voter_hash, election_id);
+        let session_key = format!("{voter_hash}:{election_id}");
         if let Some(session) = sessions.get_mut(&session_key) {
             session.voting_method = voting_method;
             session.last_activity = self.current_timestamp();
@@ -968,12 +1060,17 @@ impl SecurityContext {
 
     async fn get_failed_attempts_count(&self, voter_hash: &str) -> u32 {
         let failed_attempts = self.failed_attempts.read().unwrap();
-        failed_attempts.get(voter_hash)
+        failed_attempts
+            .get(voter_hash)
             .map(|attempts| attempts.len() as u32)
             .unwrap_or(0)
     }
 
-    async fn get_recent_security_events(&self, voter_hash: &str, limit: usize) -> Vec<SecurityEvent> {
+    async fn get_recent_security_events(
+        &self,
+        voter_hash: &str,
+        limit: usize,
+    ) -> Vec<SecurityEvent> {
         // Query audit system for recent events related to this voter
         let query = AuditQuery {
             limit: Some(limit),
@@ -981,13 +1078,11 @@ impl SecurityContext {
         };
 
         match self.audit_system.query_audit_records(query).await {
-            Ok(audit_records) => {
-                audit_records
-                    .into_iter()
-                    .filter(|record| self.audit_record_involves_voter(record, voter_hash))
-                    .map(|record| record.security_event)
-                    .collect()
-            }
+            Ok(audit_records) => audit_records
+                .into_iter()
+                .filter(|record| self.audit_record_involves_voter(record, voter_hash))
+                .map(|record| record.security_event)
+                .collect(),
             Err(e) => {
                 tracing::error!("Failed to query audit records: {}", e);
                 Vec::new()
@@ -995,7 +1090,11 @@ impl SecurityContext {
         }
     }
 
-    fn audit_record_involves_voter(&self, record: &crate::crypto::audit::AuditRecord, voter_hash: &str) -> bool {
+    fn audit_record_involves_voter(
+        &self,
+        record: &crate::crypto::audit::AuditRecord,
+        voter_hash: &str,
+    ) -> bool {
         self.event_involves_voter(&record.security_event, voter_hash)
     }
 
@@ -1050,17 +1149,23 @@ impl SecurityContext {
 
     fn generate_correlation_id(&self, event: &SecurityEvent) -> Option<String> {
         match event {
-            SecurityEvent::LoginAttempt { voter_hash, election_id, .. } => {
-                Some(format!("login_{}_{}", &voter_hash[..8], election_id))
-            }
-            SecurityEvent::VotingLockAcquired { voter_hash, election_id, .. } => {
-                Some(format!("voting_{}_{}", &voter_hash[..8], election_id))
-            }
-            SecurityEvent::VotingCompleted { voter_hash, election_id, .. } => {
-                Some(format!("completion_{}_{}", &voter_hash[..8], election_id))
-            }
+            SecurityEvent::LoginAttempt {
+                voter_hash,
+                election_id,
+                ..
+            } => Some(format!("login_{}_{}", &voter_hash[..8], election_id)),
+            SecurityEvent::VotingLockAcquired {
+                voter_hash,
+                election_id,
+                ..
+            } => Some(format!("voting_{}_{}", &voter_hash[..8], election_id)),
+            SecurityEvent::VotingCompleted {
+                voter_hash,
+                election_id,
+                ..
+            } => Some(format!("completion_{}_{}", &voter_hash[..8], election_id)),
             SecurityEvent::SecurityIncident { incident_id, .. } => {
-                Some(format!("incident_{}", incident_id))
+                Some(format!("incident_{incident_id}"))
             }
             _ => None,
         }
@@ -1082,14 +1187,17 @@ impl SecurityContext {
         if metrics.total_sessions == 0 {
             metrics.avg_auth_time_ms = new_time_ms;
         } else {
-            metrics.avg_auth_time_ms = (metrics.avg_auth_time_ms * metrics.total_sessions as f64 + new_time_ms) / (metrics.total_sessions + 1) as f64;
+            metrics.avg_auth_time_ms = (metrics.avg_auth_time_ms * metrics.total_sessions as f64
+                + new_time_ms)
+                / (metrics.total_sessions + 1) as f64;
         }
 
         metrics.total_sessions += 1;
 
         // Calculate rates
         if metrics.successful_authentications + metrics.failed_authentications > 0 {
-            metrics.failed_auth_rate = metrics.failed_authentications as f64 / (metrics.successful_authentications + metrics.failed_authentications) as f64;
+            metrics.failed_auth_rate = metrics.failed_authentications as f64
+                / (metrics.successful_authentications + metrics.failed_authentications) as f64;
         }
     }
 
@@ -1106,17 +1214,25 @@ impl SecurityContext {
     }
 
     /// Query audit records with criteria
-    pub async fn query_audit_records(&self, query: AuditQuery) -> Result<Vec<crate::crypto::audit::AuditRecord>> {
+    pub async fn query_audit_records(
+        &self,
+        query: AuditQuery,
+    ) -> Result<Vec<crate::crypto::audit::AuditRecord>> {
         self.audit_system.query_audit_records(query).await
     }
 
     /// Export compliance report
-    pub async fn export_compliance_report(&self, query: AuditQuery) -> Result<crate::crypto::audit::ComplianceReport> {
+    pub async fn export_compliance_report(
+        &self,
+        query: AuditQuery,
+    ) -> Result<crate::crypto::audit::ComplianceReport> {
         self.audit_system.export_compliance_report(query).await
     }
 
     /// Verify audit trail integrity
-    pub async fn verify_audit_integrity(&self) -> Result<crate::crypto::audit::AuditIntegrityReport> {
+    pub async fn verify_audit_integrity(
+        &self,
+    ) -> Result<crate::crypto::audit::AuditIntegrityReport> {
         self.audit_system.verify_integrity().await
     }
 
@@ -1126,7 +1242,9 @@ impl SecurityContext {
     }
 
     /// Clean up expired audit records
-    pub async fn cleanup_expired_audit_records(&self) -> Result<crate::crypto::audit::AuditCleanupReport> {
+    pub async fn cleanup_expired_audit_records(
+        &self,
+    ) -> Result<crate::crypto::audit::AuditCleanupReport> {
         self.audit_system.cleanup_expired().await
     }
 
@@ -1136,22 +1254,31 @@ impl SecurityContext {
     }
 
     /// Get current security performance metrics
-    pub async fn get_security_performance_metrics(&self) -> Result<crate::crypto::security_monitoring::SecurityPerformanceMetrics> {
+    pub async fn get_security_performance_metrics(
+        &self,
+    ) -> Result<crate::crypto::security_monitoring::SecurityPerformanceMetrics> {
         self.performance_monitor.get_current_metrics().await
     }
 
     /// Get timing statistics for a specific security operation
-    pub async fn get_operation_timing_stats(&self, operation: &SecurityOperation) -> Result<Option<crate::crypto::security_monitoring::OperationTimingStats>> {
+    pub async fn get_operation_timing_stats(
+        &self,
+        operation: &SecurityOperation,
+    ) -> Result<Option<crate::crypto::security_monitoring::OperationTimingStats>> {
         self.performance_monitor.get_timing_stats(operation).await
     }
 
     /// Get authentication patterns analysis
-    pub async fn get_authentication_patterns(&self) -> Result<Vec<crate::crypto::security_monitoring::AuthenticationPattern>> {
+    pub async fn get_authentication_patterns(
+        &self,
+    ) -> Result<Vec<crate::crypto::security_monitoring::AuthenticationPattern>> {
         self.performance_monitor.get_auth_patterns().await
     }
 
     /// Get detected DoS patterns
-    pub async fn get_dos_patterns(&self) -> Result<Vec<crate::crypto::security_monitoring::DoSPattern>> {
+    pub async fn get_dos_patterns(
+        &self,
+    ) -> Result<Vec<crate::crypto::security_monitoring::DoSPattern>> {
         self.performance_monitor.get_dos_patterns().await
     }
 
@@ -1168,11 +1295,16 @@ impl SecurityContext {
         success: bool,
         context: SecurityTimingContext,
     ) -> Result<crate::crypto::security_monitoring::SecurityThreatAssessment> {
-        self.performance_monitor.record_timing(operation, duration, success, context).await
+        self.performance_monitor
+            .record_timing(operation, duration, success, context)
+            .await
     }
 
     /// Record resource usage for DoS detection
-    pub async fn record_resource_usage(&self, usage: crate::crypto::security_monitoring::ResourceUsage) -> Result<()> {
+    pub async fn record_resource_usage(
+        &self,
+        usage: crate::crypto::security_monitoring::ResourceUsage,
+    ) -> Result<()> {
         self.performance_monitor.record_resource_usage(usage).await
     }
 }
@@ -1226,8 +1358,8 @@ pub struct SecurityStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::{SecureSaltManager, SecurityOperation, SecurityTimingContext};
-    use std::time::Duration;
+    use crate::crypto::{SecureSaltManager, SecurityOperation};
+
     use std::sync::Arc;
 
     #[tokio::test]
@@ -1236,11 +1368,8 @@ mod tests {
         let token_service = Arc::new(VotingTokenService::for_testing());
         let lock_service = VotingLockService::new(token_service.clone());
 
-        let security_context = SecurityContext::for_testing(
-            salt_manager,
-            token_service,
-            Arc::new(lock_service),
-        );
+        let security_context =
+            SecurityContext::for_testing(salt_manager, token_service, Arc::new(lock_service));
 
         let metrics = security_context.get_security_metrics().await.unwrap();
         assert_eq!(metrics.total_sessions, 0);
@@ -1255,28 +1384,35 @@ mod tests {
         let token_service = Arc::new(VotingTokenService::for_testing());
         let lock_service = VotingLockService::new(token_service.clone());
 
-        let security_context = SecurityContext::for_testing(
-            salt_manager,
-            token_service,
-            Arc::new(lock_service),
-        );
+        let security_context =
+            SecurityContext::for_testing(salt_manager, token_service, Arc::new(lock_service));
 
         let bank_id = "CZ1234567890";
         let election_id = Uuid::new_v4();
         let session_id = Some("test_session_123".to_string());
 
-        let login_result = security_context.secure_login(
-            bank_id,
-            &election_id,
-            session_id.clone(),
-            Some("192.168.1.100".to_string()),
-        ).await.unwrap();
+        let login_result = security_context
+            .secure_login(
+                bank_id,
+                &election_id,
+                session_id.clone(),
+                Some("192.168.1.100".to_string()),
+            )
+            .await
+            .unwrap();
 
         match login_result {
-            SecurityLoginResult::Success { token, session_id: returned_session, security_level } => {
+            SecurityLoginResult::Success {
+                token,
+                session_id: returned_session,
+                security_level,
+            } => {
                 assert_eq!(security_level, SecurityLevel::Standard);
                 assert_eq!(returned_session, session_id.unwrap());
-                println!("✅ Secure login successful: token={}", &token.token_id[..12]);
+                println!(
+                    "✅ Secure login successful: token={}",
+                    &token.token_id[..12]
+                );
             }
             _ => panic!("Expected successful login"),
         }
@@ -1294,27 +1430,28 @@ mod tests {
         let token_service = Arc::new(VotingTokenService::for_testing());
         let lock_service = VotingLockService::new(token_service.clone());
 
-        let security_context = SecurityContext::for_testing(
-            salt_manager,
-            token_service,
-            Arc::new(lock_service),
-        );
+        let security_context =
+            SecurityContext::for_testing(salt_manager, token_service, Arc::new(lock_service));
 
         let voter_hash = hex::encode([1u8; 32]);
 
         // Simulate multiple failed attempts
         for i in 0..5 {
-            security_context.log_failed_attempt(
-                &voter_hash,
-                "test_operation",
-                &format!("Failed attempt {}", i + 1),
-            ).await;
+            security_context
+                .log_failed_attempt(
+                    &voter_hash,
+                    "test_operation",
+                    &format!("Failed attempt {}", i + 1),
+                )
+                .await;
         }
 
-        let failed_count = security_context.get_failed_attempts_count(&voter_hash).await;
+        let failed_count = security_context
+            .get_failed_attempts_count(&voter_hash)
+            .await;
         assert!(failed_count >= 3); // Should have triggered incident detection
 
-        println!("✅ Security incident detection working: {} failed attempts", failed_count);
+        println!("✅ Security incident detection working: {failed_count} failed attempts");
     }
 
     #[tokio::test]
@@ -1323,37 +1460,42 @@ mod tests {
         let token_service = Arc::new(VotingTokenService::for_testing());
         let lock_service = VotingLockService::new(token_service.clone());
 
-        let security_context = SecurityContext::for_testing(
-            salt_manager,
-            token_service,
-            Arc::new(lock_service),
-        );
+        let security_context =
+            SecurityContext::for_testing(salt_manager, token_service, Arc::new(lock_service));
 
         let bank_id = "CZ1234567890";
         let election_id = Uuid::new_v4();
 
         // 1. Secure login
-        let login_result = security_context.secure_login(
-            bank_id,
-            &election_id,
-            Some("complete_workflow_session".to_string()),
-            None,
-        ).await.unwrap();
+        let login_result = security_context
+            .secure_login(
+                bank_id,
+                &election_id,
+                Some("complete_workflow_session".to_string()),
+                None,
+            )
+            .await
+            .unwrap();
 
         let (token, session_id) = match login_result {
-            SecurityLoginResult::Success { token, session_id, .. } => (token, session_id),
+            SecurityLoginResult::Success {
+                token, session_id, ..
+            } => (token, session_id),
             _ => panic!("Expected successful login"),
         };
 
         let voter_hash = token.voter_hash.clone();
 
         // 2. Secure voting
-        let vote_result = security_context.secure_vote(
-            &token.token_id,
-            &voter_hash,
-            &election_id,
-            VotingMethod::Digital,
-        ).await.unwrap();
+        let vote_result = security_context
+            .secure_vote(
+                &token.token_id,
+                &voter_hash,
+                &election_id,
+                VotingMethod::Digital,
+            )
+            .await
+            .unwrap();
 
         let voting_lock = match vote_result {
             SecurityVoteResult::LockAcquired { lock } => lock,
@@ -1362,10 +1504,16 @@ mod tests {
 
         // 3. Complete voting
         let vote_id = Uuid::new_v4();
-        let completion = security_context.complete_voting(&voting_lock, Some(vote_id)).await.unwrap();
+        let completion = security_context
+            .complete_voting(&voting_lock, Some(vote_id))
+            .await
+            .unwrap();
 
         // 4. Secure logout
-        let logout_result = security_context.secure_logout(&voter_hash, &election_id).await.unwrap();
+        let logout_result = security_context
+            .secure_logout(&voter_hash, &election_id)
+            .await
+            .unwrap();
 
         // 5. Verify final state
         let final_metrics = security_context.get_security_metrics().await.unwrap();
@@ -1374,8 +1522,14 @@ mod tests {
 
         println!("✅ Complete secure voting workflow successful");
         println!("   Completion: {}", completion.completion_id);
-        println!("   Tokens invalidated: {}", logout_result.invalidated_tokens);
-        println!("   Security score: {:.2}", final_metrics.system_security_score);
+        println!(
+            "   Tokens invalidated: {}",
+            logout_result.invalidated_tokens
+        );
+        println!(
+            "   Security score: {:.2}",
+            final_metrics.system_security_score
+        );
 
         // Verify audit trail
         let audit_integrity = security_context.verify_audit_integrity().await.unwrap();
@@ -1387,14 +1541,26 @@ mod tests {
         assert!(audit_stats.total_records > 0);
 
         // Verify performance monitoring
-        let performance_metrics = security_context.get_security_performance_metrics().await.unwrap();
-        println!("   Security health score: {:.2}", performance_metrics.security_health_score);
+        let performance_metrics = security_context
+            .get_security_performance_metrics()
+            .await
+            .unwrap();
+        println!(
+            "   Security health score: {:.2}",
+            performance_metrics.security_health_score
+        );
         assert!(performance_metrics.authentication_attempts > 0);
 
         // Check timing stats for login operation
-        let login_stats = security_context.get_operation_timing_stats(&SecurityOperation::SecureLogin).await.unwrap();
+        let login_stats = security_context
+            .get_operation_timing_stats(&SecurityOperation::SecureLogin)
+            .await
+            .unwrap();
         if let Some(stats) = login_stats {
-            println!("   Login timing - avg: {:.2}μs, samples: {}", stats.avg_micros, stats.sample_count);
+            println!(
+                "   Login timing - avg: {:.2}μs, samples: {}",
+                stats.avg_micros, stats.sample_count
+            );
             assert!(stats.sample_count > 0);
         }
     }

@@ -10,7 +10,7 @@
 //! - Banking-grade cryptographic primitives (Ed25519 + Blake3)
 //! - **ENHANCED: Secure memory clearing and management**
 
-use crate::{crypto_error, Result};
+use crate::{Result, crypto_error};
 use ed25519_dalek::{Signature as Ed25519Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::RngCore;
 use std::collections::VecDeque;
@@ -171,7 +171,8 @@ impl SecureSaltManager {
 
         // ALWAYS compute the hash regardless of timestamp validity
         // This prevents timing attacks based on early timestamp rejection
-        let mut hasher = blake3::Hasher::new_keyed(&self.voter_salt.as_slice()[..32].try_into().unwrap());
+        let mut hasher =
+            blake3::Hasher::new_keyed(&self.voter_salt.as_slice()[..32].try_into().unwrap());
         hasher.update(bank_id.as_bytes());
         hasher.update(election_id.as_bytes());
         // NOTE: timestamp intentionally NOT included to ensure deterministic hashes
@@ -202,7 +203,8 @@ impl SecureSaltManager {
         rng.fill_bytes(&mut nonce);
 
         // Use keyed hash for token generation
-        let mut hasher = blake3::Hasher::new_keyed(&self.token_salt.as_slice()[..32].try_into().unwrap());
+        let mut hasher =
+            blake3::Hasher::new_keyed(&self.token_salt.as_slice()[..32].try_into().unwrap());
         hasher.update(voter_hash);
         hasher.update(election_id.as_bytes());
         hasher.update(&nonce);
@@ -235,7 +237,8 @@ impl SecureSaltManager {
 
         // ALWAYS perform the expensive cryptographic operation regardless of expiration
         // This prevents timing oracles based on early returns
-        let mut hasher = blake3::Hasher::new_keyed(&self.token_salt.as_slice()[..32].try_into().unwrap());
+        let mut hasher =
+            blake3::Hasher::new_keyed(&self.token_salt.as_slice()[..32].try_into().unwrap());
         hasher.update(voter_hash);
         hasher.update(election_id.as_bytes());
         hasher.update(nonce);
@@ -269,7 +272,8 @@ impl SecureSaltManager {
             .as_secs();
 
         // Hash with salt for additional security
-        let mut hasher = blake3::Hasher::new_keyed(&self.token_salt.as_slice()[..32].try_into().unwrap());
+        let mut hasher =
+            blake3::Hasher::new_keyed(&self.token_salt.as_slice()[..32].try_into().unwrap());
         hasher.update(session_data.as_slice());
         hasher.update(&timestamp.to_le_bytes());
 
@@ -283,8 +287,8 @@ impl SecureSaltManager {
     ///
     /// SECURITY: Ensures voter hash meets security requirements
     pub fn validate_voter_hash_format(&self, voter_hash: &str) -> Result<[u8; 32]> {
-        let decoded = hex::decode(voter_hash)
-            .map_err(|_| crypto_error!("Invalid voter hash hex format"))?;
+        let decoded =
+            hex::decode(voter_hash).map_err(|_| crypto_error!("Invalid voter hash hex format"))?;
 
         if decoded.len() != 32 {
             return Err(crypto_error!("Voter hash must be exactly 32 bytes"));
@@ -448,12 +452,10 @@ impl SecureKeyPair {
         let ed25519_sig = Ed25519Signature::from_slice(signature)
             .map_err(|_| crypto_error!("Invalid signature format"))?;
 
-        let verification_result = self.verifying_key
-            .verify(signed_data.as_slice(), &ed25519_sig)
-            .map_err(|_| crypto_error!("Signature verification failed"));
-
         // signed_data will be securely cleared on drop
-        verification_result
+        self.verifying_key
+            .verify(signed_data.as_slice(), &ed25519_sig)
+            .map_err(|_| crypto_error!("Signature verification failed"))
     }
 
     /// Securely clear any cached sensitive material
@@ -568,7 +570,9 @@ impl SecureMemory {
     /// SECURITY: Copies data and clears the source for move semantics
     pub fn secure_copy_and_clear(source: &mut [u8], dest: &mut [u8]) -> Result<()> {
         if source.len() != dest.len() {
-            return Err(crypto_error!("Source and destination must have same length"));
+            return Err(crypto_error!(
+                "Source and destination must have same length"
+            ));
         }
 
         // Copy data
@@ -662,12 +666,18 @@ impl SecureMemory {
     /// Constant-time conditional move
     ///
     /// SECURITY: Moves data based on condition without timing leakage
-    pub fn constant_time_select(condition: bool, if_true: &[u8], if_false: &[u8]) -> Result<SecureBuffer> {
+    pub fn constant_time_select(
+        condition: bool,
+        if_true: &[u8],
+        if_false: &[u8],
+    ) -> Result<SecureBuffer> {
         if if_true.len() != if_false.len() {
-            return Err(crypto_error!("Arrays must have same length for constant-time select"));
+            return Err(crypto_error!(
+                "Arrays must have same length for constant-time select"
+            ));
         }
 
-        use subtle::{ConstantTimeEq, ConditionallySelectable};
+        use subtle::{ConditionallySelectable, ConstantTimeEq};
 
         let mut result = SecureBuffer::new(if_true.len());
         let condition_ct = if condition { 1u8 } else { 0u8 }.ct_eq(&1u8);
@@ -704,7 +714,7 @@ pub struct SecureString {
 impl SecureString {
     /// Create new secure string from &str
     pub fn new(s: &str) -> Self {
-        let mut buffer = SecureBuffer::from_data(s.as_bytes().to_vec());
+        let buffer = SecureBuffer::from_data(s.as_bytes().to_vec());
         Self { buffer }
     }
 
@@ -825,11 +835,13 @@ mod tests {
         let false_data = [0x22u8; 8];
 
         // Select true case
-        let true_result = SecureMemory::constant_time_select(true, &true_data, &false_data).unwrap();
+        let true_result =
+            SecureMemory::constant_time_select(true, &true_data, &false_data).unwrap();
         assert_eq!(true_result.as_slice(), &true_data);
 
         // Select false case
-        let false_result = SecureMemory::constant_time_select(false, &true_data, &false_data).unwrap();
+        let false_result =
+            SecureMemory::constant_time_select(false, &true_data, &false_data).unwrap();
         assert_eq!(false_result.as_slice(), &false_data);
 
         println!("✅ Constant-time select works correctly");
@@ -868,7 +880,9 @@ mod tests {
         let (signature, timestamp) = key_pair.sign_with_timestamp(message).unwrap();
 
         // Verification should work
-        key_pair.verify_with_timestamp(message, &signature, timestamp, 300).unwrap();
+        key_pair
+            .verify_with_timestamp(message, &signature, timestamp, 300)
+            .unwrap();
 
         // The key pair will be dropped at end of scope, testing memory clearing
         println!("✅ Enhanced key pair memory security works");
@@ -950,7 +964,7 @@ mod tests {
             SecureMemory::secure_zero(&mut buffer);
 
             for byte in &buffer {
-                assert_eq!(*byte, 0, "Buffer of size {} not properly cleared", size);
+                assert_eq!(*byte, 0, "Buffer of size {size} not properly cleared");
             }
         }
 

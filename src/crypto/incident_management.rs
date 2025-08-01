@@ -16,16 +16,14 @@
 //! - Compliance-ready reporting and audit integration
 //! - Real-time threat mitigation and countermeasures
 
-use crate::{crypto_error, Result};
 use crate::crypto::{
-    SecurityEvent, SecurityLevel,
-    SecurityPerformanceMonitor, SecurityContext, EnhancedAuditSystem,
-    SecurityOperation, AuthenticationPattern, DoSPattern,
-    AuditQuery
+    AuthenticationPattern, DoSPattern, EnhancedAuditSystem, SecurityContext, SecurityLevel,
+    SecurityOperation, SecurityPerformanceMonitor,
 };
+use crate::{Result, crypto_error};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, RwLock, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -126,11 +124,16 @@ impl SecurityIncident {
     /// Update incident status and timestamp
     pub fn update_status(&mut self, new_status: IncidentStatus) -> Result<()> {
         // Check status before moving to avoid use after move
-        if matches!(new_status, IncidentStatus::Resolved | IncidentStatus::Closed) {
-            self.resolved_at = Some(SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|_| crypto_error!("System time error"))?
-                .as_secs());
+        if matches!(
+            new_status,
+            IncidentStatus::Resolved | IncidentStatus::Closed
+        ) {
+            self.resolved_at = Some(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| crypto_error!("System time error"))?
+                    .as_secs(),
+            );
         }
 
         self.status = new_status;
@@ -181,9 +184,9 @@ impl SecurityIncident {
 
     /// Check if incident requires human intervention
     pub fn requires_human_intervention(&self) -> bool {
-        self.calculate_threat_escalation() > CRITICAL_INCIDENT_THRESHOLD ||
-            self.responses_executed.len() > 5 ||
-            matches!(self.severity, IncidentSeverity::Critical)
+        self.calculate_threat_escalation() > CRITICAL_INCIDENT_THRESHOLD
+            || self.responses_executed.len() > 5
+            || matches!(self.severity, IncidentSeverity::Critical)
     }
 }
 
@@ -270,21 +273,36 @@ pub enum IncidentSeverity {
 impl IncidentSeverity {
     fn from_incident_type(incident_type: &IncidentType) -> Self {
         match incident_type {
-            IncidentType::BruteForceAttack { failed_attempts, .. } => {
-                if *failed_attempts > 100 { Self::Critical }
-                else if *failed_attempts > 50 { Self::High }
-                else if *failed_attempts > 20 { Self::Medium }
-                else { Self::Low }
+            IncidentType::BruteForceAttack {
+                failed_attempts, ..
+            } => {
+                if *failed_attempts > 100 {
+                    Self::Critical
+                } else if *failed_attempts > 50 {
+                    Self::High
+                } else if *failed_attempts > 20 {
+                    Self::Medium
+                } else {
+                    Self::Low
+                }
             }
             IncidentType::TimingAttack { anomaly_count, .. } => {
-                if *anomaly_count > 50 { Self::High }
-                else if *anomaly_count > 20 { Self::Medium }
-                else { Self::Low }
+                if *anomaly_count > 50 {
+                    Self::High
+                } else if *anomaly_count > 20 {
+                    Self::Medium
+                } else {
+                    Self::Low
+                }
             }
             IncidentType::CryptographicFailure { failure_rate, .. } => {
-                if *failure_rate > 0.5 { Self::Critical }
-                else if *failure_rate > 0.2 { Self::High }
-                else { Self::Medium }
+                if *failure_rate > 0.5 {
+                    Self::Critical
+                } else if *failure_rate > 0.2 {
+                    Self::High
+                } else {
+                    Self::Medium
+                }
             }
             IncidentType::DenialOfService { .. } => Self::Critical,
             IncidentType::SystemIntegrityFailure { .. } => Self::Emergency,
@@ -299,13 +317,13 @@ impl IncidentSeverity {
 /// Current status of an incident
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum IncidentStatus {
-    Detected,           // Initial detection
-    Analyzing,          // Under automated analysis
-    Responding,         // Automated response in progress
-    Escalated,          // Escalated to human intervention
-    Contained,          // Threat contained but monitoring continues
-    Resolved,           // Incident resolved
-    Closed,             // Incident closed and archived
+    Detected,   // Initial detection
+    Analyzing,  // Under automated analysis
+    Responding, // Automated response in progress
+    Escalated,  // Escalated to human intervention
+    Contained,  // Threat contained but monitoring continues
+    Resolved,   // Incident resolved
+    Closed,     // Incident closed and archived
 }
 
 /// Entity affected by the incident
@@ -327,6 +345,12 @@ pub struct IncidentEvidence {
     pub system_logs: Vec<String>,
     pub forensic_data: HashMap<String, serde_json::Value>,
     pub collected_at: u64,
+}
+
+impl Default for IncidentEvidence {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl IncidentEvidence {
@@ -371,11 +395,11 @@ impl IncidentEvidence {
     }
 
     pub fn evidence_count(&self) -> usize {
-        self.security_events.len() +
-            self.performance_metrics.len() +
-            self.audit_records.len() +
-            self.system_logs.len() +
-            self.forensic_data.len()
+        self.security_events.len()
+            + self.performance_metrics.len()
+            + self.audit_records.len()
+            + self.system_logs.len()
+            + self.forensic_data.len()
     }
 }
 
@@ -398,6 +422,12 @@ pub struct IncidentCorrelation {
     pub campaign_indicators: Vec<String>,
 }
 
+impl Default for IncidentCorrelation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IncidentCorrelation {
     pub fn new() -> Self {
         Self {
@@ -416,6 +446,12 @@ pub struct ComplianceMetadata {
     pub reporting_requirements: Vec<String>,
     pub evidence_preservation: bool,
     pub sla_requirements: Option<Duration>,
+}
+
+impl Default for ComplianceMetadata {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ComplianceMetadata {
@@ -601,7 +637,10 @@ impl PatternCorrelator {
     }
 
     /// Analyze authentication patterns for brute force and credential stuffing
-    async fn analyze_authentication_pattern(&self, auth_pattern: &AuthenticationPattern) -> Result<Option<DetectedPattern>> {
+    async fn analyze_authentication_pattern(
+        &self,
+        auth_pattern: &AuthenticationPattern,
+    ) -> Result<Option<DetectedPattern>> {
         if auth_pattern.is_suspicious() {
             let pattern_type = if auth_pattern.avg_attempt_interval < 1.0 {
                 PatternType::BruteForceAttack
@@ -616,9 +655,14 @@ impl PatternCorrelator {
                 pattern_type,
                 confidence: auth_pattern.suspicious_score,
                 affected_entities: vec![auth_pattern.voter_hash.clone()],
-                evidence: vec![format!("Failed attempts: {}, Timing anomalies: {}",
-                                       auth_pattern.failed_attempts, auth_pattern.timing_anomalies)],
-                detected_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
+                evidence: vec![format!(
+                    "Failed attempts: {}, Timing anomalies: {}",
+                    auth_pattern.failed_attempts, auth_pattern.timing_anomalies
+                )],
+                detected_at: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
             }));
         }
 
@@ -626,7 +670,10 @@ impl PatternCorrelator {
     }
 
     /// Analyze DoS patterns
-    async fn analyze_dos_pattern(&self, dos_pattern: &DoSPattern) -> Result<Option<DetectedPattern>> {
+    async fn analyze_dos_pattern(
+        &self,
+        dos_pattern: &DoSPattern,
+    ) -> Result<Option<DetectedPattern>> {
         let confidence = match dos_pattern.severity {
             crate::crypto::security_monitoring::DoSSeverity::Critical => 0.9,
             crate::crypto::security_monitoring::DoSSeverity::High => 0.7,
@@ -639,22 +686,29 @@ impl PatternCorrelator {
             pattern_type: PatternType::DenialOfService,
             confidence,
             affected_entities: vec!["system".to_string()],
-            evidence: vec![format!("DoS pattern: {:?}, Duration: {}s",
-                                   dos_pattern.detection_type, dos_pattern.duration_seconds)],
+            evidence: vec![format!(
+                "DoS pattern: {:?}, Duration: {}s",
+                dos_pattern.detection_type, dos_pattern.duration_seconds
+            )],
             detected_at: dos_pattern.start_time,
         }))
     }
 
     /// Analyze timing patterns for potential timing attacks
-    async fn analyze_timing_patterns(&self, metrics: &crate::crypto::security_monitoring::SecurityPerformanceMetrics) -> Result<Option<DetectedPattern>> {
+    async fn analyze_timing_patterns(
+        &self,
+        metrics: &crate::crypto::security_monitoring::SecurityPerformanceMetrics,
+    ) -> Result<Option<DetectedPattern>> {
         if metrics.timing_anomalies_detected > 10 {
             return Ok(Some(DetectedPattern {
                 pattern_id: Uuid::new_v4(),
                 pattern_type: PatternType::TimingAttack,
                 confidence: (metrics.timing_anomalies_detected as f64 / 100.0).min(0.9),
                 affected_entities: vec!["crypto_operations".to_string()],
-                evidence: vec![format!("Timing anomalies: {}, Potential attacks: {}",
-                                       metrics.timing_anomalies_detected, metrics.potential_timing_attacks)],
+                evidence: vec![format!(
+                    "Timing anomalies: {}, Potential attacks: {}",
+                    metrics.timing_anomalies_detected, metrics.potential_timing_attacks
+                )],
                 detected_at: metrics.timestamp,
             }));
         }
@@ -667,13 +721,19 @@ impl PatternCorrelator {
             CorrelationRule {
                 rule_id: "brute_force_detection".to_string(),
                 description: "Detect brute force authentication attacks".to_string(),
-                conditions: vec!["failed_auth_count > 10".to_string(), "time_window < 300".to_string()],
+                conditions: vec![
+                    "failed_auth_count > 10".to_string(),
+                    "time_window < 300".to_string(),
+                ],
                 confidence_threshold: 0.7,
             },
             CorrelationRule {
                 rule_id: "timing_attack_detection".to_string(),
                 description: "Detect timing-based side-channel attacks".to_string(),
-                conditions: vec!["timing_anomalies > 20".to_string(), "operation_type = crypto".to_string()],
+                conditions: vec![
+                    "timing_anomalies > 20".to_string(),
+                    "operation_type = crypto".to_string(),
+                ],
                 confidence_threshold: 0.6,
             },
         ]
@@ -726,6 +786,12 @@ pub struct EscalationEngine {
     response_history: Arc<RwLock<HashMap<String, Vec<AutomatedResponse>>>>,
 }
 
+impl Default for EscalationEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EscalationEngine {
     pub fn new() -> Self {
         Self {
@@ -735,11 +801,16 @@ impl EscalationEngine {
     }
 
     /// Determine appropriate responses for an incident
-    pub async fn determine_responses(&self, incident: &SecurityIncident) -> Result<Vec<ResponseType>> {
+    pub async fn determine_responses(
+        &self,
+        incident: &SecurityIncident,
+    ) -> Result<Vec<ResponseType>> {
         let mut responses = Vec::new();
 
         match &incident.incident_type {
-            IncidentType::BruteForceAttack { failed_attempts, .. } => {
+            IncidentType::BruteForceAttack {
+                failed_attempts, ..
+            } => {
                 responses.push(ResponseType::RateLimitEscalation {
                     operation: SecurityOperation::SecureLogin,
                     escalation_factor: (*failed_attempts / 10).max(2),
@@ -757,7 +828,11 @@ impl EscalationEngine {
                 }
             }
 
-            IncidentType::TimingAttack { operation, anomaly_count, .. } => {
+            IncidentType::TimingAttack {
+                operation,
+                anomaly_count,
+                ..
+            } => {
                 responses.push(ResponseType::RateLimitEscalation {
                     operation: operation.clone(),
                     escalation_factor: (*anomaly_count / 5).max(2),
@@ -766,7 +841,7 @@ impl EscalationEngine {
 
                 if *anomaly_count > 50 {
                     responses.push(ResponseType::EmergencyKeyRotation {
-                        component: format!("{:?}", operation),
+                        component: format!("{operation:?}"),
                         reason: "Timing attack detected".to_string(),
                     });
                 }
@@ -808,7 +883,10 @@ impl EscalationEngine {
         }
 
         // Add alert escalation for high severity incidents
-        if matches!(incident.severity, IncidentSeverity::Critical | IncidentSeverity::Emergency) {
+        if matches!(
+            incident.severity,
+            IncidentSeverity::Critical | IncidentSeverity::Emergency
+        ) {
             responses.push(ResponseType::AlertEscalation {
                 alert_level: AlertLevel::Critical,
                 recipients: vec!["security_team".to_string()],
@@ -829,7 +907,10 @@ impl EscalationEngine {
             EscalationRule {
                 rule_id: "timing_attack_escalation".to_string(),
                 conditions: vec!["incident_type = timing_attack".to_string()],
-                responses: vec!["key_rotation".to_string(), "enhanced_monitoring".to_string()],
+                responses: vec![
+                    "key_rotation".to_string(),
+                    "enhanced_monitoring".to_string(),
+                ],
                 escalation_threshold: 0.6,
             },
         ]
@@ -851,6 +932,12 @@ pub struct ResponseOrchestrator {
     execution_history: Arc<RwLock<HashMap<Uuid, AutomatedResponse>>>,
 }
 
+impl Default for ResponseOrchestrator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ResponseOrchestrator {
     pub fn new() -> Self {
         Self {
@@ -866,30 +953,46 @@ impl ResponseOrchestrator {
         response_type: ResponseType,
         security_context: &SecurityContext,
     ) -> Result<AutomatedResponse> {
-        let mut response = AutomatedResponse::new(response_type.clone(), vec!["system".to_string()]);
+        let mut response =
+            AutomatedResponse::new(response_type.clone(), vec!["system".to_string()]);
 
         let result = match response_type {
             ResponseType::RateLimitEscalation { .. } => {
                 self.execute_rate_limit_escalation(security_context).await
             }
-            ResponseType::TemporaryAccountLock { voter_hash, duration, reason } => {
-                self.execute_account_lock(security_context, &voter_hash, duration, &reason).await
+            ResponseType::TemporaryAccountLock {
+                voter_hash,
+                duration,
+                reason,
+            } => {
+                self.execute_account_lock(security_context, &voter_hash, duration, &reason)
+                    .await
             }
             ResponseType::TokenInvalidation { scope, reason } => {
-                self.execute_token_invalidation(security_context, scope, &reason).await
+                self.execute_token_invalidation(security_context, scope, &reason)
+                    .await
             }
             ResponseType::EmergencyKeyRotation { component, reason } => {
-                self.execute_key_rotation(security_context, &component, &reason).await
+                self.execute_key_rotation(security_context, &component, &reason)
+                    .await
             }
-            ResponseType::AlertEscalation { alert_level, recipients } => {
-                self.execute_alert_escalation(alert_level, recipients).await
-            }
-            ResponseType::EnhancedMonitoring { entities, monitoring_level, duration } => {
-                self.execute_enhanced_monitoring(entities, monitoring_level, duration).await
+            ResponseType::AlertEscalation {
+                alert_level,
+                recipients,
+            } => self.execute_alert_escalation(alert_level, recipients).await,
+            ResponseType::EnhancedMonitoring {
+                entities,
+                monitoring_level,
+                duration,
+            } => {
+                self.execute_enhanced_monitoring(entities, monitoring_level, duration)
+                    .await
             }
             _ => {
                 tracing::warn!("Unhandled response type: {:?}", response_type);
-                Ok(ResponseResult::Skipped { reason: "Response type not implemented".to_string() })
+                Ok(ResponseResult::Skipped {
+                    reason: "Response type not implemented".to_string(),
+                })
             }
         };
 
@@ -897,7 +1000,9 @@ impl ResponseOrchestrator {
 
         // Store execution history
         {
-            let mut history = self.execution_history.write()
+            let mut history = self
+                .execution_history
+                .write()
                 .map_err(|_| crypto_error!("Failed to write execution history"))?;
             history.insert(response.response_id, response.clone());
         }
@@ -912,35 +1017,83 @@ impl ResponseOrchestrator {
         Ok(response)
     }
 
-    async fn execute_rate_limit_escalation(&self, _security_context: &SecurityContext) -> Result<ResponseResult> {
+    async fn execute_rate_limit_escalation(
+        &self,
+        _security_context: &SecurityContext,
+    ) -> Result<ResponseResult> {
         // Implementation would integrate with rate limiter
         tracing::info!("🚦 Rate limit escalation executed");
         Ok(ResponseResult::Success)
     }
 
-    async fn execute_account_lock(&self, _security_context: &SecurityContext, voter_hash: &str, _duration: Duration, reason: &str) -> Result<ResponseResult> {
+    async fn execute_account_lock(
+        &self,
+        _security_context: &SecurityContext,
+        voter_hash: &str,
+        _duration: Duration,
+        reason: &str,
+    ) -> Result<ResponseResult> {
         // Would integrate with security context to lock account
-        tracing::warn!("🔒 Account locked: voter={}, reason={}", &voter_hash[..8], reason);
+        tracing::warn!(
+            "🔒 Account locked: voter={}, reason={}",
+            &voter_hash[..8],
+            reason
+        );
         Ok(ResponseResult::Success)
     }
 
-    async fn execute_token_invalidation(&self, _security_context: &SecurityContext, scope: TokenInvalidationScope, reason: &str) -> Result<ResponseResult> {
-        tracing::warn!("🎫 Token invalidation: scope={:?}, reason={}", scope, reason);
+    async fn execute_token_invalidation(
+        &self,
+        _security_context: &SecurityContext,
+        scope: TokenInvalidationScope,
+        reason: &str,
+    ) -> Result<ResponseResult> {
+        tracing::warn!(
+            "🎫 Token invalidation: scope={:?}, reason={}",
+            scope,
+            reason
+        );
         Ok(ResponseResult::Success)
     }
 
-    async fn execute_key_rotation(&self, _security_context: &SecurityContext, component: &str, reason: &str) -> Result<ResponseResult> {
-        tracing::error!("🔑 Emergency key rotation: component={}, reason={}", component, reason);
+    async fn execute_key_rotation(
+        &self,
+        _security_context: &SecurityContext,
+        component: &str,
+        reason: &str,
+    ) -> Result<ResponseResult> {
+        tracing::error!(
+            "🔑 Emergency key rotation: component={}, reason={}",
+            component,
+            reason
+        );
         Ok(ResponseResult::Success)
     }
 
-    async fn execute_alert_escalation(&self, alert_level: AlertLevel, recipients: Vec<String>) -> Result<ResponseResult> {
-        tracing::error!("🚨 Alert escalated: level={:?}, recipients={:?}", alert_level, recipients);
+    async fn execute_alert_escalation(
+        &self,
+        alert_level: AlertLevel,
+        recipients: Vec<String>,
+    ) -> Result<ResponseResult> {
+        tracing::error!(
+            "🚨 Alert escalated: level={:?}, recipients={:?}",
+            alert_level,
+            recipients
+        );
         Ok(ResponseResult::Success)
     }
 
-    async fn execute_enhanced_monitoring(&self, entities: Vec<String>, level: String, _duration: Duration) -> Result<ResponseResult> {
-        tracing::info!("👁️ Enhanced monitoring activated: entities={:?}, level={}", entities, level);
+    async fn execute_enhanced_monitoring(
+        &self,
+        entities: Vec<String>,
+        level: String,
+        _duration: Duration,
+    ) -> Result<ResponseResult> {
+        tracing::info!(
+            "👁️ Enhanced monitoring activated: entities={:?}, level={}",
+            entities,
+            level
+        );
         Ok(ResponseResult::Success)
     }
 }
@@ -997,10 +1150,10 @@ impl SecurityIncidentManager {
         let analysis_start = SystemTime::now();
 
         // Analyze patterns from all security systems
-        let detected_patterns = self.pattern_correlator.analyze_patterns(
-            performance_monitor,
-            audit_system,
-        ).await?;
+        let detected_patterns = self
+            .pattern_correlator
+            .analyze_patterns(performance_monitor, audit_system)
+            .await?;
 
         let mut new_incidents = Vec::new();
         let mut updated_incidents = Vec::new();
@@ -1016,20 +1169,23 @@ impl SecurityIncidentManager {
                     new_incidents.push(incident.incident_id);
 
                     // Determine and execute responses
-                    let responses = self.escalation_engine.determine_responses(&incident).await?;
+                    let responses = self
+                        .escalation_engine
+                        .determine_responses(&incident)
+                        .await?;
 
                     for response_type in responses {
-                        let response = self.response_orchestrator.execute_response(
-                            incident.incident_id,
-                            response_type,
-                            security_context,
-                        ).await?;
+                        let response = self
+                            .response_orchestrator
+                            .execute_response(incident.incident_id, response_type, security_context)
+                            .await?;
 
                         responses_executed.push(response);
                     }
 
                     // Update incident status
-                    self.update_incident_status(incident.incident_id, IncidentStatus::Responding).await?;
+                    self.update_incident_status(incident.incident_id, IncidentStatus::Responding)
+                        .await?;
                 } else {
                     updated_incidents.push(incident.incident_id);
                 }
@@ -1037,12 +1193,16 @@ impl SecurityIncidentManager {
         }
 
         // Update statistics
-        self.update_statistics(new_incidents.len(), responses_executed.len()).await?;
+        self.update_statistics(new_incidents.len(), responses_executed.len())
+            .await?;
 
         let analysis_duration = analysis_start.elapsed().unwrap_or_default();
 
         Ok(IncidentAnalysisReport {
-            analysis_timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
+            analysis_timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
             analysis_duration,
             patterns_analyzed: detected_patterns.len(), // Fixed: now we can use .len() since we didn't move
             new_incidents: new_incidents.len(),
@@ -1053,11 +1213,18 @@ impl SecurityIncidentManager {
     }
 
     /// Create or update incident based on detected pattern
-    async fn create_or_update_incident(&self, pattern: DetectedPattern) -> Result<SecurityIncident> {
+    async fn create_or_update_incident(
+        &self,
+        pattern: DetectedPattern,
+    ) -> Result<SecurityIncident> {
         let affected_entity = if pattern.affected_entities.len() == 1 {
-            AffectedEntity::Voter { voter_hash: pattern.affected_entities[0].clone() }
+            AffectedEntity::Voter {
+                voter_hash: pattern.affected_entities[0].clone(),
+            }
         } else if pattern.affected_entities.len() > 1 {
-            AffectedEntity::Multiple { entities: pattern.affected_entities.clone() }
+            AffectedEntity::Multiple {
+                entities: pattern.affected_entities.clone(),
+            }
         } else {
             AffectedEntity::Unknown
         };
@@ -1075,7 +1242,9 @@ impl SecurityIncidentManager {
 
         // Store incident
         {
-            let mut active_incidents = self.active_incidents.write()
+            let mut active_incidents = self
+                .active_incidents
+                .write()
                 .map_err(|_| crypto_error!("Failed to write active incidents"))?;
             active_incidents.insert(incident.incident_id, incident.clone());
         }
@@ -1114,19 +1283,30 @@ impl SecurityIncidentManager {
     }
 
     /// Update incident status
-    pub async fn update_incident_status(&self, incident_id: Uuid, new_status: IncidentStatus) -> Result<()> {
-        let mut active_incidents = self.active_incidents.write()
+    pub async fn update_incident_status(
+        &self,
+        incident_id: Uuid,
+        new_status: IncidentStatus,
+    ) -> Result<()> {
+        let mut active_incidents = self
+            .active_incidents
+            .write()
             .map_err(|_| crypto_error!("Failed to write active incidents"))?;
 
         if let Some(incident) = active_incidents.get_mut(&incident_id) {
             incident.update_status(new_status.clone())?;
 
             // Move to resolved incidents if closed
-            if matches!(new_status, IncidentStatus::Resolved | IncidentStatus::Closed) {
+            if matches!(
+                new_status,
+                IncidentStatus::Resolved | IncidentStatus::Closed
+            ) {
                 let resolved_incident = incident.clone();
                 drop(active_incidents); // Release write lock
 
-                let mut resolved_incidents = self.resolved_incidents.write()
+                let mut resolved_incidents = self
+                    .resolved_incidents
+                    .write()
                     .map_err(|_| crypto_error!("Failed to write resolved incidents"))?;
                 resolved_incidents.push_back(resolved_incident);
 
@@ -1136,7 +1316,9 @@ impl SecurityIncidentManager {
                 }
 
                 // Remove from active incidents
-                let mut active_incidents = self.active_incidents.write()
+                let mut active_incidents = self
+                    .active_incidents
+                    .write()
                     .map_err(|_| crypto_error!("Failed to write active incidents"))?;
                 active_incidents.remove(&incident_id);
             }
@@ -1147,21 +1329,30 @@ impl SecurityIncidentManager {
 
     /// Get current incident statistics
     pub async fn get_incident_statistics(&self) -> Result<IncidentStatistics> {
-        let statistics = self.incident_statistics.read()
+        let statistics = self
+            .incident_statistics
+            .read()
             .map_err(|_| crypto_error!("Failed to read incident statistics"))?;
         Ok(statistics.clone())
     }
 
     /// Get active incidents
     pub async fn get_active_incidents(&self) -> Result<Vec<SecurityIncident>> {
-        let active_incidents = self.active_incidents.read()
+        let active_incidents = self
+            .active_incidents
+            .read()
             .map_err(|_| crypto_error!("Failed to read active incidents"))?;
         Ok(active_incidents.values().cloned().collect())
     }
 
     /// Get resolved incidents
-    pub async fn get_resolved_incidents(&self, limit: Option<usize>) -> Result<Vec<SecurityIncident>> {
-        let resolved_incidents = self.resolved_incidents.read()
+    pub async fn get_resolved_incidents(
+        &self,
+        limit: Option<usize>,
+    ) -> Result<Vec<SecurityIncident>> {
+        let resolved_incidents = self
+            .resolved_incidents
+            .read()
             .map_err(|_| crypto_error!("Failed to read resolved incidents"))?;
 
         let incidents: Vec<SecurityIncident> = resolved_incidents.iter().cloned().collect();
@@ -1173,13 +1364,24 @@ impl SecurityIncidentManager {
         }
     }
 
-    async fn update_statistics(&self, new_incidents: usize, responses_executed: usize) -> Result<()> {
-        let mut statistics = self.incident_statistics.write()
+    async fn update_statistics(
+        &self,
+        new_incidents: usize,
+        responses_executed: usize,
+    ) -> Result<()> {
+        let mut statistics = self
+            .incident_statistics
+            .write()
             .map_err(|_| crypto_error!("Failed to write incident statistics"))?;
 
         statistics.total_incidents += new_incidents as u64;
         statistics.total_responses += responses_executed as u64;
-        statistics.last_analysis = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs());
+        statistics.last_analysis = Some(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        );
 
         Ok(())
     }
@@ -1262,7 +1464,7 @@ impl IncidentManagementConfig {
     pub fn for_testing() -> Self {
         Self {
             correlation_window_seconds: 300, // 5 minutes for testing
-            incident_threshold: 0.3, // Lower threshold for testing
+            incident_threshold: 0.3,         // Lower threshold for testing
             max_active_incidents: 100,
             max_resolved_incidents: 500,
             max_pattern_history: 1000,
@@ -1275,7 +1477,10 @@ impl IncidentManagementConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::{SecurityPerformanceMonitor, EnhancedAuditSystem, SecurityContext, SecureSaltManager, VotingTokenService, VotingLockService};
+    use crate::crypto::{
+        EnhancedAuditSystem, SecureSaltManager, SecurityContext, SecurityPerformanceMonitor,
+        VotingLockService, VotingTokenService,
+    };
 
     #[tokio::test]
     async fn test_incident_manager_creation() {
@@ -1297,7 +1502,8 @@ mod tests {
         let salt_manager = Arc::new(SecureSaltManager::for_testing());
         let token_service = Arc::new(VotingTokenService::for_testing());
         let lock_service = VotingLockService::new(token_service.clone());
-        let security_context = SecurityContext::for_testing(salt_manager, token_service, Arc::new(lock_service));
+        let security_context =
+            SecurityContext::for_testing(salt_manager, token_service, Arc::new(lock_service));
 
         // Simulate suspicious authentication patterns by recording failed attempts
         println!("🔍 Recording 20 failed authentication attempts...");
@@ -1308,51 +1514,79 @@ mod tests {
             };
 
             // Record failed authentication attempts
-            performance_monitor.record_timing(
-                SecurityOperation::SecureLogin,
-                Duration::from_millis(100 + i * 10), // Increasing timing (suspicious)
-                false, // Failed attempts
-                context,
-            ).await.unwrap();
+            performance_monitor
+                .record_timing(
+                    SecurityOperation::SecureLogin,
+                    Duration::from_millis(100 + i * 10), // Increasing timing (suspicious)
+                    false,                               // Failed attempts
+                    context,
+                )
+                .await
+                .unwrap();
         }
 
         // Debug: Check what auth patterns were created
         let auth_patterns = performance_monitor.get_auth_patterns().await.unwrap();
-        println!("📊 Created {} authentication patterns:", auth_patterns.len());
+        println!(
+            "📊 Created {} authentication patterns:",
+            auth_patterns.len()
+        );
         for pattern in &auth_patterns {
-            println!("   Pattern {}: failed={}, score={:.2}, suspicious={}",
-                     &pattern.voter_hash[..15],
-                     pattern.failed_attempts,
-                     pattern.suspicious_score,
-                     pattern.is_suspicious());
+            println!(
+                "   Pattern {}: failed={}, score={:.2}, suspicious={}",
+                &pattern.voter_hash[..15],
+                pattern.failed_attempts,
+                pattern.suspicious_score,
+                pattern.is_suspicious()
+            );
         }
 
         // Analyze and respond
-        let analysis_report = incident_manager.analyze_and_respond(
-            &performance_monitor,
-            &audit_system,
-            &security_context,
-        ).await.unwrap();
+        let analysis_report = incident_manager
+            .analyze_and_respond(&performance_monitor, &audit_system, &security_context)
+            .await
+            .unwrap();
 
         println!("✅ Incident analysis completed:");
-        println!("   Patterns analyzed: {}", analysis_report.patterns_analyzed);
+        println!(
+            "   Patterns analyzed: {}",
+            analysis_report.patterns_analyzed
+        );
         println!("   New incidents: {}", analysis_report.new_incidents);
-        println!("   Responses executed: {}", analysis_report.responses_executed);
-        println!("   System health impact: {:.2}", analysis_report.system_health_impact);
+        println!(
+            "   Responses executed: {}",
+            analysis_report.responses_executed
+        );
+        println!(
+            "   System health impact: {:.2}",
+            analysis_report.system_health_impact
+        );
 
         // Should have detected suspicious patterns
-        assert!(analysis_report.patterns_analyzed > 0, "Expected to analyze patterns but got 0. Auth patterns found: {}", auth_patterns.len());
+        assert!(
+            analysis_report.patterns_analyzed > 0,
+            "Expected to analyze patterns but got 0. Auth patterns found: {}",
+            auth_patterns.len()
+        );
 
         let active_incidents = incident_manager.get_active_incidents().await.unwrap();
         if !active_incidents.is_empty() {
             let incident = &active_incidents[0];
-            println!("   First incident: type={:?}, severity={:?}", incident.incident_type, incident.severity);
-            assert!(matches!(incident.status, IncidentStatus::Detected | IncidentStatus::Responding));
+            println!(
+                "   First incident: type={:?}, severity={:?}",
+                incident.incident_type, incident.severity
+            );
+            assert!(matches!(
+                incident.status,
+                IncidentStatus::Detected | IncidentStatus::Responding
+            ));
         }
 
         let final_statistics = incident_manager.get_incident_statistics().await.unwrap();
-        println!("   Final statistics: incidents={}, responses={}",
-                 final_statistics.total_incidents, final_statistics.total_responses);
+        println!(
+            "   Final statistics: incidents={}, responses={}",
+            final_statistics.total_incidents, final_statistics.total_responses
+        );
     }
 
     #[tokio::test]
@@ -1360,7 +1594,9 @@ mod tests {
         let incident_manager = SecurityIncidentManager::for_testing();
 
         // Create a test incident
-        let affected_entity = AffectedEntity::Voter { voter_hash: "test_voter".to_string() };
+        let affected_entity = AffectedEntity::Voter {
+            voter_hash: "test_voter".to_string(),
+        };
         let incident_type = IncidentType::BruteForceAttack {
             failed_attempts: 25,
             time_window_seconds: 300,
@@ -1371,10 +1607,15 @@ mod tests {
             affected_entity,
             vec![],
             "Test brute force incident".to_string(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Determine responses
-        let responses = incident_manager.escalation_engine.determine_responses(&incident).await.unwrap();
+        let responses = incident_manager
+            .escalation_engine
+            .determine_responses(&incident)
+            .await
+            .unwrap();
         assert!(!responses.is_empty());
 
         println!("✅ Automated response determination:");
@@ -1386,20 +1627,31 @@ mod tests {
         let salt_manager = Arc::new(SecureSaltManager::for_testing());
         let token_service = Arc::new(VotingTokenService::for_testing());
         let lock_service = VotingLockService::new(token_service.clone());
-        let security_context = SecurityContext::for_testing(salt_manager, token_service, Arc::new(lock_service));
+        let security_context =
+            SecurityContext::for_testing(salt_manager, token_service, Arc::new(lock_service));
 
         if let Some(first_response) = responses.first() {
-            let executed_response = incident_manager.response_orchestrator.execute_response(
-                incident.incident_id,
-                first_response.clone(),
-                &security_context,
-            ).await.unwrap();
+            let executed_response = incident_manager
+                .response_orchestrator
+                .execute_response(
+                    incident.incident_id,
+                    first_response.clone(),
+                    &security_context,
+                )
+                .await
+                .unwrap();
 
             println!("✅ Response executed:");
             println!("   Response ID: {}", executed_response.response_id);
-            println!("   Execution result: {:?}", executed_response.execution_result);
+            println!(
+                "   Execution result: {:?}",
+                executed_response.execution_result
+            );
 
-            assert!(matches!(executed_response.execution_result, ResponseResult::Success));
+            assert!(matches!(
+                executed_response.execution_result,
+                ResponseResult::Success
+            ));
         }
     }
 
@@ -1408,7 +1660,9 @@ mod tests {
         let incident_manager = SecurityIncidentManager::for_testing();
 
         // Create incident
-        let affected_entity = AffectedEntity::System { component: "test_component".to_string() };
+        let affected_entity = AffectedEntity::System {
+            component: "test_component".to_string(),
+        };
         let incident_type = IncidentType::SystemIntegrityFailure {
             component: "test_component".to_string(),
             failure_details: "Test failure".to_string(),
@@ -1419,7 +1673,8 @@ mod tests {
             affected_entity,
             vec![],
             "Test system integrity incident".to_string(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let incident_id = incident.incident_id;
 
@@ -1430,17 +1685,40 @@ mod tests {
         }
 
         // Test status transitions
-        incident_manager.update_incident_status(incident_id, IncidentStatus::Analyzing).await.unwrap();
-        incident_manager.update_incident_status(incident_id, IncidentStatus::Responding).await.unwrap();
-        incident_manager.update_incident_status(incident_id, IncidentStatus::Contained).await.unwrap();
-        incident_manager.update_incident_status(incident_id, IncidentStatus::Resolved).await.unwrap();
+        incident_manager
+            .update_incident_status(incident_id, IncidentStatus::Analyzing)
+            .await
+            .unwrap();
+        incident_manager
+            .update_incident_status(incident_id, IncidentStatus::Responding)
+            .await
+            .unwrap();
+        incident_manager
+            .update_incident_status(incident_id, IncidentStatus::Contained)
+            .await
+            .unwrap();
+        incident_manager
+            .update_incident_status(incident_id, IncidentStatus::Resolved)
+            .await
+            .unwrap();
 
         // Should be moved to resolved incidents
         let active_incidents = incident_manager.get_active_incidents().await.unwrap();
-        assert!(!active_incidents.iter().any(|i| i.incident_id == incident_id));
+        assert!(
+            !active_incidents
+                .iter()
+                .any(|i| i.incident_id == incident_id)
+        );
 
-        let resolved_incidents = incident_manager.get_resolved_incidents(Some(10)).await.unwrap();
-        assert!(resolved_incidents.iter().any(|i| i.incident_id == incident_id));
+        let resolved_incidents = incident_manager
+            .get_resolved_incidents(Some(10))
+            .await
+            .unwrap();
+        assert!(
+            resolved_incidents
+                .iter()
+                .any(|i| i.incident_id == incident_id)
+        );
 
         println!("✅ Incident lifecycle management works correctly");
         println!("   Incident moved from active to resolved");
@@ -1463,7 +1741,10 @@ mod tests {
             suspicious_score: 0.8,
         };
 
-        let detected_pattern = correlator.analyze_authentication_pattern(&auth_pattern).await.unwrap();
+        let detected_pattern = correlator
+            .analyze_authentication_pattern(&auth_pattern)
+            .await
+            .unwrap();
         assert!(detected_pattern.is_some());
 
         if let Some(pattern) = detected_pattern {

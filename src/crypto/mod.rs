@@ -1,13 +1,13 @@
 //! Cryptographic primitives for the voting system
 
+pub mod audit;
+pub mod incident_management;
+pub mod key_rotation;
 pub mod secure;
+pub mod security_context;
+pub mod security_monitoring;
 pub mod voting_lock;
 pub mod voting_token;
-pub mod key_rotation;
-pub mod security_context;
-pub mod audit;
-pub mod security_monitoring;
-pub mod incident_management;
 
 use crate::{Result, crypto_error};
 use rand::RngCore;
@@ -19,46 +19,49 @@ pub use crate::types::{Hash, PublicKey, Signature};
 pub use secure::{CryptoRateLimiter, SecureKeyPair, SecureMemory, SecureSaltManager};
 
 // Re-export enhanced voting lock types
-pub use voting_lock::{VotingCompletion, VotingStatus, LogoutResult, VotingLockService, VotingMethod};
+pub use voting_lock::{
+    LogoutResult, VotingCompletion, VotingLockService, VotingMethod, VotingStatus,
+};
 
 // Re-export voting token types
 pub use voting_token::{
-    VotingTokenService, VotingToken, TokenConfig, TokenState, TokenResult,
-    TokenCleanupService, TokenServiceStats, TokenCleanupStats
+    TokenCleanupService, TokenCleanupStats, TokenConfig, TokenResult, TokenServiceStats,
+    TokenState, VotingToken, VotingTokenService,
 };
 
 // Re-export key rotation types
-pub use key_rotation::{KeyRotationManager, KeyRotationService, KeyRotationConfig, KeyRotationStats};
+pub use key_rotation::{
+    KeyRotationConfig, KeyRotationManager, KeyRotationService, KeyRotationStats,
+};
 
 // Re-export unified security context
 pub use security_context::{
-    SecurityContext, SecurityEvent, SecuritySession, SecurityLevel, SecurityMetrics,
-    SecurityLoginResult, SecurityVoteResult, SecurityStatus, SecurityIncidentType, SecuritySeverity
+    SecurityContext, SecurityEvent, SecurityIncidentType, SecurityLevel, SecurityLoginResult,
+    SecurityMetrics, SecuritySession, SecuritySeverity, SecurityStatus, SecurityVoteResult,
 };
 
 // Re-export enhanced audit system
 pub use audit::{
-    EnhancedAuditSystem, AuditRecord, AuditTrail, AuditConfig, AuditQuery,
-    ComplianceLevel, AuditLevel, ComplianceReport, ComplianceAuditRecord,
-    AuditIntegrityReport, AuditCleanupReport, AuditTrailStatistics
+    AuditCleanupReport, AuditConfig, AuditIntegrityReport, AuditLevel, AuditQuery, AuditRecord,
+    AuditTrail, AuditTrailStatistics, ComplianceAuditRecord, ComplianceLevel, ComplianceReport,
+    EnhancedAuditSystem,
 };
 
 // Re-export security monitoring system
 pub use security_monitoring::{
-    SecurityPerformanceMonitor, SecurityTimer, SecurityTiming, SecurityOperation,
-    SecurityPerformanceMetrics, OperationTimingStats, AuthenticationPattern,
-    DoSPattern, SecurityThreatAssessment, ThreatLevel, ThreatType,
-    SecurityMonitoringConfig, LayerSecurityIntegration, LayerType,
-    SecurityTimingContext, ResourceUsage
+    AuthenticationPattern, DoSPattern, LayerSecurityIntegration, LayerType, OperationTimingStats,
+    ResourceUsage, SecurityMonitoringConfig, SecurityOperation, SecurityPerformanceMetrics,
+    SecurityPerformanceMonitor, SecurityThreatAssessment, SecurityTimer, SecurityTiming,
+    SecurityTimingContext, ThreatLevel, ThreatType,
 };
 
 // Re-export automatic security incident management
 pub use incident_management::{
-    SecurityIncidentManager, SecurityIncident, IncidentType, IncidentSeverity, IncidentStatus,
-    AffectedEntity, IncidentEvidence, EvidenceType, IncidentCorrelation, ComplianceMetadata,
-    AutomatedResponse, ResponseType, ResponseResult, AlertLevel, TokenInvalidationScope,
-    PatternCorrelator, DetectedPattern, PatternType, EscalationEngine, ResponseOrchestrator,
-    IncidentAnalysisReport, IncidentStatistics, IncidentManagementConfig
+    AffectedEntity, AlertLevel, AutomatedResponse, ComplianceMetadata, DetectedPattern,
+    EscalationEngine, EvidenceType, IncidentAnalysisReport, IncidentCorrelation, IncidentEvidence,
+    IncidentManagementConfig, IncidentSeverity, IncidentStatistics, IncidentStatus, IncidentType,
+    PatternCorrelator, PatternType, ResponseOrchestrator, ResponseResult, ResponseType,
+    SecurityIncident, SecurityIncidentManager, TokenInvalidationScope,
 };
 
 /// Secure random token generator

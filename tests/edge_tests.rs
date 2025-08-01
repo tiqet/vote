@@ -16,22 +16,21 @@
 //! - Production deployment should use dedicated timing analysis tools
 //! - Banking-grade systems require specialized constant-time crypto libraries
 
-use vote::{
-    config::SecurityConfig,
-    crypto::{
-        SecureSaltManager, VotingTokenService, VotingLockService,
-        VotingMethod, TokenResult, TokenConfig,
-        key_rotation::KeyRotationConfig,
-        CryptoRateLimiter, SecureMemory,
-        voting_lock::LockResult,
-    },
-    Result, voting_error,
-};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::timeout;
 use uuid::Uuid;
-use std::collections::HashSet;
+use vote::{
+    Result,
+    config::SecurityConfig,
+    crypto::{
+        CryptoRateLimiter, SecureMemory, SecureSaltManager, TokenConfig, TokenResult,
+        VotingLockService, VotingMethod, VotingTokenService, key_rotation::KeyRotationConfig,
+        voting_lock::LockResult,
+    },
+    voting_error,
+};
 
 // =============================================================================
 // CONCURRENT OPERATIONS TESTS
@@ -63,7 +62,7 @@ async fn test_concurrent_token_issuance_race_conditions() -> Result<()> {
                 &salt_manager,
                 &voter_hash_str,
                 &election_id,
-                Some(format!("concurrent_session_{}", i)),
+                Some(format!("concurrent_session_{i}")),
             );
 
             match result {
@@ -76,7 +75,7 @@ async fn test_concurrent_token_issuance_race_conditions() -> Result<()> {
                     *count += 1;
                 }
                 Ok(_) => panic!("Unexpected token result"),
-                Err(e) => panic!("Token issuance failed: {}", e),
+                Err(e) => panic!("Token issuance failed: {e}"),
             }
         });
 
@@ -92,8 +91,8 @@ async fn test_concurrent_token_issuance_race_conditions() -> Result<()> {
     let final_too_many = *too_many_count.lock().unwrap();
 
     println!("✅ Concurrent token issuance results:");
-    println!("   Successful: {}", final_success);
-    println!("   Too many: {}", final_too_many);
+    println!("   Successful: {final_success}");
+    println!("   Too many: {final_too_many}");
     println!("   Total: {}", final_success + final_too_many);
 
     // Should respect max token limit even under concurrency
@@ -120,7 +119,7 @@ async fn test_concurrent_voting_lock_acquisition() -> Result<()> {
             &salt_manager,
             &voter_hash_str,
             &election_id,
-            Some(format!("lock_test_session_{}", i)),
+            Some(format!("lock_test_session_{i}")),
         )?;
 
         if let TokenResult::Issued(token) = token_result {
@@ -128,7 +127,10 @@ async fn test_concurrent_voting_lock_acquisition() -> Result<()> {
         }
     }
 
-    assert!(tokens.len() >= 2, "Need at least 2 tokens for concurrent test");
+    assert!(
+        tokens.len() >= 2,
+        "Need at least 2 tokens for concurrent test"
+    );
 
     // Attempt concurrent lock acquisition
     let mut handles = Vec::new();
@@ -143,7 +145,11 @@ async fn test_concurrent_voting_lock_acquisition() -> Result<()> {
         let already_locked_count = already_locked_count.clone();
 
         let handle = tokio::spawn(async move {
-            let method = if i % 2 == 0 { VotingMethod::Digital } else { VotingMethod::Analog };
+            let method = if i % 2 == 0 {
+                VotingMethod::Digital
+            } else {
+                VotingMethod::Analog
+            };
 
             let result = lock_service.acquire_lock_with_token(
                 &salt_manager,
@@ -163,7 +169,7 @@ async fn test_concurrent_voting_lock_acquisition() -> Result<()> {
                     *count += 1;
                 }
                 Ok(_) => panic!("Unexpected lock result"),
-                Err(e) => panic!("Lock acquisition failed: {}", e),
+                Err(e) => panic!("Lock acquisition failed: {e}"),
             }
         });
 
@@ -178,8 +184,8 @@ async fn test_concurrent_voting_lock_acquisition() -> Result<()> {
     let final_already_locked = *already_locked_count.lock().unwrap();
 
     println!("✅ Concurrent lock acquisition results:");
-    println!("   Acquired: {}", final_acquired);
-    println!("   Already locked: {}", final_already_locked);
+    println!("   Acquired: {final_acquired}");
+    println!("   Already locked: {final_already_locked}");
 
     // Only one should succeed, others should be blocked
     assert_eq!(final_acquired, 1, "Only one concurrent lock should succeed");
@@ -215,7 +221,7 @@ async fn test_concurrent_different_voters() -> Result<()> {
                 &salt_manager,
                 &voter_hash_str,
                 &election_id,
-                Some(format!("concurrent_voter_session_{}", i)),
+                Some(format!("concurrent_voter_session_{i}")),
             );
 
             let token = match token_result {
@@ -241,7 +247,10 @@ async fn test_concurrent_different_voters() -> Result<()> {
 
             // Complete voting
             let vote_id = Uuid::new_v4();
-            if lock_service.complete_voting_with_token_cleanup(&voting_lock, Some(vote_id)).is_ok() {
+            if lock_service
+                .complete_voting_with_token_cleanup(&voting_lock, Some(vote_id))
+                .is_ok()
+            {
                 let mut count = successful_votes.lock().unwrap();
                 *count += 1;
             }
@@ -256,10 +265,13 @@ async fn test_concurrent_different_voters() -> Result<()> {
     }
 
     let final_successful = *successful_votes.lock().unwrap();
-    println!("✅ Concurrent different voters: {} successful votes out of 50", final_successful);
+    println!("✅ Concurrent different voters: {final_successful} successful votes out of 50");
 
     // Should handle multiple concurrent voters successfully
-    assert!(final_successful > 40, "Most concurrent voters should succeed");
+    assert!(
+        final_successful > 40,
+        "Most concurrent voters should succeed"
+    );
 
     let final_stats = lock_service.get_stats()?;
     assert_eq!(final_stats.total_completions, final_successful);
@@ -279,11 +291,15 @@ async fn test_constant_time_token_validation() -> Result<()> {
     let salt_manager = SecureSaltManager::for_testing();
     let voter_hash = [1u8; 32];
     let election_id = Uuid::new_v4();
-    let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let current_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let expires_at = current_time + 1800;
 
     // Generate legitimate token
-    let (valid_token_hash, valid_nonce) = salt_manager.generate_voting_token_secure(&voter_hash, &election_id, expires_at)?;
+    let (valid_token_hash, valid_nonce) =
+        salt_manager.generate_voting_token_secure(&voter_hash, &election_id, expires_at)?;
 
     // Generate invalid token (forged)
     let mut invalid_token_hash = valid_token_hash;
@@ -320,30 +336,39 @@ async fn test_constant_time_token_validation() -> Result<()> {
     }
 
     // Calculate averages
-    let valid_avg: f64 = valid_timings.iter().map(|&x| x as f64).sum::<f64>() / valid_timings.len() as f64;
-    let invalid_avg: f64 = invalid_timings.iter().map(|&x| x as f64).sum::<f64>() / invalid_timings.len() as f64;
+    let valid_avg: f64 =
+        valid_timings.iter().map(|&x| x as f64).sum::<f64>() / valid_timings.len() as f64;
+    let invalid_avg: f64 =
+        invalid_timings.iter().map(|&x| x as f64).sum::<f64>() / invalid_timings.len() as f64;
 
     println!("✅ Timing analysis:");
-    println!("   Valid token avg: {:.2}ns", valid_avg);
-    println!("   Invalid token avg: {:.2}ns", invalid_avg);
+    println!("   Valid token avg: {valid_avg:.2}ns");
+    println!("   Invalid token avg: {invalid_avg:.2}ns");
 
     // Check for timing attack resistance (difference should be minimal)
     let timing_difference = (valid_avg - invalid_avg).abs();
     let timing_difference_percent = (timing_difference / valid_avg) * 100.0;
 
-    println!("   Timing difference: {:.2}% ({:.2}ns)", timing_difference_percent, timing_difference);
+    println!("   Timing difference: {timing_difference_percent:.2}% ({timing_difference:.2}ns)");
 
     // Note: In test environments, timing can be noisy due to system load
     // For production deployment, consider dedicated timing analysis
     if timing_difference_percent > 50.0 {
-        println!("⚠️  WARNING: Large timing difference detected - potential timing attack vulnerability");
-        println!("   Consider reviewing token validation implementation for constant-time properties");
+        println!(
+            "⚠️  WARNING: Large timing difference detected - potential timing attack vulnerability"
+        );
+        println!(
+            "   Consider reviewing token validation implementation for constant-time properties"
+        );
     } else {
         println!("✅ Timing difference within acceptable range for test environment");
     }
 
     // For test environment, we use a more lenient threshold due to system noise
-    assert!(timing_difference_percent < 100.0, "Extreme timing difference detected: {:.2}%", timing_difference_percent);
+    assert!(
+        timing_difference_percent < 100.0,
+        "Extreme timing difference detected: {timing_difference_percent:.2}%"
+    );
 
     Ok(())
 }
@@ -373,15 +398,17 @@ async fn test_constant_time_hash_comparison() -> Result<()> {
         different_timings.push(start.elapsed().as_nanos());
     }
 
-    let equal_avg: f64 = equal_timings.iter().map(|&x| x as f64).sum::<f64>() / equal_timings.len() as f64;
-    let different_avg: f64 = different_timings.iter().map(|&x| x as f64).sum::<f64>() / different_timings.len() as f64;
+    let equal_avg: f64 =
+        equal_timings.iter().map(|&x| x as f64).sum::<f64>() / equal_timings.len() as f64;
+    let different_avg: f64 =
+        different_timings.iter().map(|&x| x as f64).sum::<f64>() / different_timings.len() as f64;
 
     println!("✅ Hash comparison timing:");
-    println!("   Equal hashes avg: {:.2}ns", equal_avg);
-    println!("   Different hashes avg: {:.2}ns", different_avg);
+    println!("   Equal hashes avg: {equal_avg:.2}ns");
+    println!("   Different hashes avg: {different_avg:.2}ns");
 
     let timing_difference_percent = ((equal_avg - different_avg).abs() / equal_avg) * 100.0;
-    println!("   Timing difference: {:.2}%", timing_difference_percent);
+    println!("   Timing difference: {timing_difference_percent:.2}%");
 
     // Note: Test environments have noise, production should use dedicated timing analysis
     if timing_difference_percent > 50.0 {
@@ -392,7 +419,10 @@ async fn test_constant_time_hash_comparison() -> Result<()> {
     }
 
     // Constant-time comparison should have reasonable timing difference for tests
-    assert!(timing_difference_percent < 200.0, "Extreme hash comparison timing detected: {:.2}%", timing_difference_percent);
+    assert!(
+        timing_difference_percent < 200.0,
+        "Extreme hash comparison timing detected: {timing_difference_percent:.2}%"
+    );
 
     Ok(())
 }
@@ -420,12 +450,13 @@ async fn test_memory_exhaustion_resistance() -> Result<()> {
             &salt_manager,
             &voter_hash_str,
             &election_id,
-            Some(format!("memory_test_{}", i)),
+            Some(format!("memory_test_{i}")),
         ) {
             Ok(TokenResult::Issued(_)) => successful_tokens += 1,
             Ok(TokenResult::TooManyTokens { .. }) => {
                 // This is expected for same voter hash
-                if i % 256 < 3 { // Should succeed for first few per voter
+                if i % 256 < 3 {
+                    // Should succeed for first few per voter
                     successful_tokens += 1;
                 } else {
                     failed_tokens += 1;
@@ -437,20 +468,26 @@ async fn test_memory_exhaustion_resistance() -> Result<()> {
         // Check memory usage periodically
         if i % 1000 == 0 {
             let stats = token_service.get_stats()?;
-            println!("   After {} attempts: {} total tokens", i, stats.total_tokens);
+            println!(
+                "   After {} attempts: {} total tokens",
+                i, stats.total_tokens
+            );
         }
     }
 
     println!("✅ Memory exhaustion test results:");
-    println!("   Successful tokens: {}", successful_tokens);
-    println!("   Failed/Limited tokens: {}", failed_tokens);
+    println!("   Successful tokens: {successful_tokens}");
+    println!("   Failed/Limited tokens: {failed_tokens}");
 
     let final_stats = token_service.get_stats()?;
     println!("   Final token count: {}", final_stats.total_tokens);
 
     // System should handle large number of requests gracefully
     assert!(successful_tokens > 0, "Should create some tokens");
-    assert!(final_stats.total_tokens < 20000, "Should limit memory usage");
+    assert!(
+        final_stats.total_tokens < 20000,
+        "Should limit memory usage"
+    );
 
     // Test cleanup under pressure
     let cleanup_stats = token_service.cleanup_expired_tokens()?;
@@ -482,8 +519,8 @@ async fn test_rate_limiter_exhaustion() -> Result<()> {
     }
 
     println!("✅ Rate limiter exhaustion results:");
-    println!("   Successful operations: {}", successful_ops);
-    println!("   Blocked operations: {}", blocked_ops);
+    println!("   Successful operations: {successful_ops}");
+    println!("   Blocked operations: {blocked_ops}");
 
     // Should block operations after limit
     assert!(successful_ops <= 5, "Should respect rate limit");
@@ -506,14 +543,47 @@ async fn test_lock_service_capacity_limits() -> Result<()> {
     let election_id = Uuid::new_v4();
 
     for i in 0..1000 {
-        let voter_hash_str = hex::encode([i as u8, (i >> 8) as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let voter_hash_str = hex::encode([
+            i as u8,
+            (i >> 8) as u8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]);
 
         // Issue token
         let token_result = token_service.issue_token(
             &salt_manager,
             &voter_hash_str,
             &election_id,
-            Some(format!("capacity_test_{}", i)),
+            Some(format!("capacity_test_{i}")),
         );
 
         if let Ok(TokenResult::Issued(token)) = token_result {
@@ -534,12 +604,16 @@ async fn test_lock_service_capacity_limits() -> Result<()> {
         // Periodically check capacity
         if i % 100 == 0 {
             let active_locks = lock_service.get_active_locks()?;
-            println!("   After {} attempts: {} active locks", i, active_locks.len());
+            println!(
+                "   After {} attempts: {} active locks",
+                i,
+                active_locks.len()
+            );
         }
     }
 
     println!("✅ Lock service capacity test:");
-    println!("   Successful locks: {}", successful_locks);
+    println!("   Successful locks: {successful_locks}");
 
     let final_active_locks = lock_service.get_active_locks()?;
     println!("   Final active locks: {}", final_active_locks.len());
@@ -570,8 +644,11 @@ async fn test_error_propagation_chain() -> Result<()> {
     let result = token_service.issue_token(&salt_manager, invalid_voter_hash, &election_id, None);
     match result {
         Err(e) => {
-            println!("✅ Invalid voter hash properly rejected: {}", e);
-            assert!(e.to_string().contains("Invalid voter hash format") || e.to_string().contains("Invalid length"));
+            println!("✅ Invalid voter hash properly rejected: {e}");
+            assert!(
+                e.to_string().contains("Invalid voter hash format")
+                    || e.to_string().contains("Invalid length")
+            );
         }
         Ok(_) => panic!("Should reject invalid voter hash format"),
     }
@@ -590,13 +667,14 @@ async fn test_error_propagation_chain() -> Result<()> {
 
     match lock_result {
         Ok(LockResult::InvalidToken { reason }) => {
-            println!("✅ Corrupted token properly rejected: {}", reason);
+            println!("✅ Corrupted token properly rejected: {reason}");
         }
         _ => panic!("Should reject corrupted token ID"),
     }
 
     // Test 3: Error recovery after failed operations
-    let valid_token_result = token_service.issue_token(&salt_manager, &valid_voter_hash, &election_id, None)?;
+    let valid_token_result =
+        token_service.issue_token(&salt_manager, &valid_voter_hash, &election_id, None)?;
     let valid_token = match valid_token_result {
         TokenResult::Issued(token) => token,
         _ => panic!("Should issue valid token"),
@@ -634,18 +712,32 @@ async fn test_partial_failure_recovery() -> Result<()> {
 
     // Create a successful scenario first
     let voter_hash_str = hex::encode([1u8; 32]);
-    let token_result = token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None)?;
-    let token = match token_result { TokenResult::Issued(t) => t, _ => panic!() };
+    let token_result =
+        token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None)?;
+    let token = match token_result {
+        TokenResult::Issued(t) => t,
+        _ => panic!(),
+    };
 
-    let lock_result = lock_service.acquire_lock_with_token(&salt_manager, &token.token_id, &voter_hash_str, &election_id, VotingMethod::Digital)?;
-    let voting_lock = match lock_result { LockResult::Acquired(l) => l, _ => panic!() };
+    let lock_result = lock_service.acquire_lock_with_token(
+        &salt_manager,
+        &token.token_id,
+        &voter_hash_str,
+        &election_id,
+        VotingMethod::Digital,
+    )?;
+    let voting_lock = match lock_result {
+        LockResult::Acquired(l) => l,
+        _ => panic!(),
+    };
 
     // Simulate partial failure during voting completion
     // (In real system, this might be network failure, disk failure, etc.)
 
     // Complete voting should succeed even if some internal operations have issues
     let vote_id = Uuid::new_v4();
-    let completion_result = lock_service.complete_voting_with_token_cleanup(&voting_lock, Some(vote_id));
+    let completion_result =
+        lock_service.complete_voting_with_token_cleanup(&voting_lock, Some(vote_id));
 
     match completion_result {
         Ok(completion) => {
@@ -653,19 +745,32 @@ async fn test_partial_failure_recovery() -> Result<()> {
             println!("   Completion ID: {}", completion.completion_id);
         }
         Err(e) => {
-            println!("❌ Unexpected failure in voting completion: {}", e);
+            println!("❌ Unexpected failure in voting completion: {e}");
             // Even if completion fails, system should remain in consistent state
             let status = lock_service.get_voting_status(&voter_hash_str, &election_id)?;
-            println!("   System status after failure: can_vote={}", status.can_vote());
+            println!(
+                "   System status after failure: can_vote={}",
+                status.can_vote()
+            );
         }
     }
 
     // System should remain operational for other voters
     let other_voter_hash = hex::encode([2u8; 32]);
-    let other_token_result = token_service.issue_token(&salt_manager, &other_voter_hash, &election_id, None)?;
-    let other_token = match other_token_result { TokenResult::Issued(t) => t, _ => panic!() };
+    let other_token_result =
+        token_service.issue_token(&salt_manager, &other_voter_hash, &election_id, None)?;
+    let other_token = match other_token_result {
+        TokenResult::Issued(t) => t,
+        _ => panic!(),
+    };
 
-    let other_lock_result = lock_service.acquire_lock_with_token(&salt_manager, &other_token.token_id, &other_voter_hash, &election_id, VotingMethod::Digital)?;
+    let other_lock_result = lock_service.acquire_lock_with_token(
+        &salt_manager,
+        &other_token.token_id,
+        &other_voter_hash,
+        &election_id,
+        VotingMethod::Digital,
+    )?;
     match other_lock_result {
         LockResult::Acquired(_) => {
             println!("✅ System remains operational for other voters after partial failure");
@@ -695,7 +800,7 @@ fn test_invalid_configuration_handling() {
     let validation_result = invalid_config.validate();
     match validation_result {
         Err(e) => {
-            println!("✅ Invalid key rotation config properly rejected: {}", e);
+            println!("✅ Invalid key rotation config properly rejected: {e}");
         }
         Ok(_) => panic!("Should reject invalid key rotation configuration"),
     }
@@ -703,7 +808,7 @@ fn test_invalid_configuration_handling() {
     // Test extreme configuration values
     let extreme_config = KeyRotationConfig {
         rotation_interval: 1, // 1 second - too short
-        overlap_period: 0,   // No overlap
+        overlap_period: 0,    // No overlap
         check_interval: 1,
         max_previous_keys: 0, // Invalid: must keep at least 1
     };
@@ -711,7 +816,7 @@ fn test_invalid_configuration_handling() {
     let extreme_validation = extreme_config.validate();
     match extreme_validation {
         Err(e) => {
-            println!("✅ Extreme config properly rejected: {}", e);
+            println!("✅ Extreme config properly rejected: {e}");
         }
         Ok(_) => panic!("Should reject extreme configuration"),
     }
@@ -729,14 +834,14 @@ fn test_invalid_configuration_handling() {
         Ok(_) => {
             println!("✅ Valid minimal config accepted");
         }
-        Err(e) => panic!("Should accept valid minimal configuration: {}", e),
+        Err(e) => panic!("Should accept valid minimal configuration: {e}"),
     }
 
     // Test token configuration extremes
     let extreme_token_config = TokenConfig {
-        lifetime_seconds: 0, // Invalid: zero lifetime
+        lifetime_seconds: 0,         // Invalid: zero lifetime
         cleanup_interval_seconds: 0, // Invalid: no cleanup
-        max_tokens_per_voter: 0, // Invalid: no tokens allowed
+        max_tokens_per_voter: 0,     // Invalid: no tokens allowed
     };
 
     // Create token service with extreme config - should handle gracefully
@@ -744,10 +849,13 @@ fn test_invalid_configuration_handling() {
     let stats = _token_service.get_stats();
     match stats {
         Ok(s) => {
-            println!("✅ Token service handles extreme config: {} tokens", s.total_tokens);
+            println!(
+                "✅ Token service handles extreme config: {} tokens",
+                s.total_tokens
+            );
         }
         Err(e) => {
-            println!("✅ Token service properly rejects extreme config: {}", e);
+            println!("✅ Token service properly rejects extreme config: {e}");
         }
     }
 }
@@ -765,14 +873,14 @@ fn test_security_config_validation() -> Result<()> {
     let config_result = SecurityConfig::from_env();
     match config_result {
         Err(e) => {
-            println!("✅ Invalid base64 salts properly rejected: {}", e);
+            println!("✅ Invalid base64 salts properly rejected: {e}");
         }
         Ok(_) => panic!("Should reject invalid base64 salts"),
     }
 
     // Test with too-short salts
     use base64::Engine;
-    let short_salt = base64::engine::general_purpose::STANDARD.encode(&[0u8; 16]); // Only 16 bytes
+    let short_salt = base64::engine::general_purpose::STANDARD.encode([0u8; 16]); // Only 16 bytes
     unsafe {
         std::env::set_var("CRYPTO_VOTER_SALT", &short_salt);
         std::env::set_var("CRYPTO_TOKEN_SALT", &short_salt);
@@ -781,7 +889,7 @@ fn test_security_config_validation() -> Result<()> {
     let short_config_result = SecurityConfig::from_env();
     match short_config_result {
         Err(e) => {
-            println!("✅ Too-short salts properly rejected: {}", e);
+            println!("✅ Too-short salts properly rejected: {e}");
         }
         Ok(_) => panic!("Should reject too-short salts"),
     }
@@ -808,8 +916,13 @@ async fn test_clock_skew_handling() -> Result<()> {
     let election_id = Uuid::new_v4();
 
     // Test 1: Future timestamp (clock ahead)
-    let future_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 3600; // 1 hour ahead
-    let future_result = salt_manager.hash_voter_identity_secure(bank_id, &election_id, future_time, 300);
+    let future_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3600; // 1 hour ahead
+    let future_result =
+        salt_manager.hash_voter_identity_secure(bank_id, &election_id, future_time, 300);
 
     match future_result {
         Ok(hash) => {
@@ -817,32 +930,40 @@ async fn test_clock_skew_handling() -> Result<()> {
             assert_eq!(hash.len(), 32);
         }
         Err(e) => {
-            println!("✅ Future timestamp properly rejected: {}", e);
+            println!("✅ Future timestamp properly rejected: {e}");
         }
     }
 
     // Test 2: Very old timestamp (replay attack)
-    let old_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - 1000; // 1000 seconds ago
+    let old_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 1000; // 1000 seconds ago
     let old_result = salt_manager.hash_voter_identity_secure(bank_id, &election_id, old_time, 300);
 
     match old_result {
         Err(e) => {
-            println!("✅ Old timestamp properly rejected (replay protection): {}", e);
+            println!("✅ Old timestamp properly rejected (replay protection): {e}");
             assert!(e.to_string().contains("too old") || e.to_string().contains("replay"));
         }
         Ok(_) => panic!("Should reject old timestamps for replay protection"),
     }
 
     // Test 3: Timestamp at boundary conditions
-    let current_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let current_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let boundary_time = current_time - 299; // Just within 300 second window
 
-    let boundary_result = salt_manager.hash_voter_identity_secure(bank_id, &election_id, boundary_time, 300);
+    let boundary_result =
+        salt_manager.hash_voter_identity_secure(bank_id, &election_id, boundary_time, 300);
     match boundary_result {
         Ok(_) => {
             println!("✅ Boundary timestamp accepted");
         }
-        Err(e) => panic!("Should accept timestamp within boundary: {}", e),
+        Err(e) => panic!("Should accept timestamp within boundary: {e}"),
     }
 
     Ok(())
@@ -865,33 +986,56 @@ async fn test_token_expiration_edge_cases() -> Result<()> {
     };
 
     let short_token_service = VotingTokenService::new(short_lifetime_config);
-    let token_result = short_token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None)?;
-    let short_token = match token_result { TokenResult::Issued(t) => t, _ => panic!() };
+    let token_result =
+        short_token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None)?;
+    let short_token = match token_result {
+        TokenResult::Issued(t) => t,
+        _ => panic!(),
+    };
 
-    println!("✅ Short-lived token issued, expires in {} seconds", short_token.time_remaining());
+    println!(
+        "✅ Short-lived token issued, expires in {} seconds",
+        short_token.time_remaining()
+    );
 
     // Wait for token to expire
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Try to validate expired token
-    let validation_result = short_token_service.validate_token(&salt_manager, &short_token.token_id, &voter_hash_str, &election_id)?;
+    let validation_result = short_token_service.validate_token(
+        &salt_manager,
+        &short_token.token_id,
+        &voter_hash_str,
+        &election_id,
+    )?;
     match validation_result {
         TokenResult::Invalid { reason } => {
-            println!("✅ Expired token properly rejected: {}", reason);
+            println!("✅ Expired token properly rejected: {reason}");
         }
         _ => panic!("Should reject expired token"),
     }
 
     // Test token that expires during validation
-    let another_token_result = short_token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None)?;
-    let another_token = match another_token_result { TokenResult::Issued(t) => t, _ => panic!() };
+    let another_token_result =
+        short_token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None)?;
+    let another_token = match another_token_result {
+        TokenResult::Issued(t) => t,
+        _ => panic!(),
+    };
 
     // Wait until very close to expiration
     tokio::time::sleep(Duration::from_millis(900)).await;
 
-    let close_validation = short_token_service.validate_token(&salt_manager, &another_token.token_id, &voter_hash_str, &election_id)?;
-    println!("✅ Token validation near expiration: {:?}",
-             matches!(close_validation, TokenResult::Valid(_)));
+    let close_validation = short_token_service.validate_token(
+        &salt_manager,
+        &another_token.token_id,
+        &voter_hash_str,
+        &election_id,
+    )?;
+    println!(
+        "✅ Token validation near expiration: {:?}",
+        matches!(close_validation, TokenResult::Valid(_))
+    );
 
     Ok(())
 }
@@ -923,12 +1067,33 @@ async fn test_state_consistency_under_pressure() -> Result<()> {
             let voter_hash_str = hex::encode([i as u8; 32]);
 
             // Rapid sequence: Issue token -> Lock -> Complete -> Issue new token -> Try to lock (should fail)
-            if let Ok(TokenResult::Issued(token1)) = token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None) {
-                if let Ok(LockResult::Acquired(lock)) = lock_service.acquire_lock_with_token(&salt_manager, &token1.token_id, &voter_hash_str, &election_id, VotingMethod::Digital) {
-                    if let Ok(_completion) = lock_service.complete_voting_with_token_cleanup(&lock, Some(Uuid::new_v4())) {
+            if let Ok(TokenResult::Issued(token1)) =
+                token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None)
+            {
+                if let Ok(LockResult::Acquired(lock)) = lock_service.acquire_lock_with_token(
+                    &salt_manager,
+                    &token1.token_id,
+                    &voter_hash_str,
+                    &election_id,
+                    VotingMethod::Digital,
+                ) {
+                    if let Ok(_completion) =
+                        lock_service.complete_voting_with_token_cleanup(&lock, Some(Uuid::new_v4()))
+                    {
                         // Try to vote again (should be blocked)
-                        if let Ok(TokenResult::Issued(token2)) = token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None) {
-                            let second_attempt = lock_service.acquire_lock_with_token(&salt_manager, &token2.token_id, &voter_hash_str, &election_id, VotingMethod::Analog);
+                        if let Ok(TokenResult::Issued(token2)) = token_service.issue_token(
+                            &salt_manager,
+                            &voter_hash_str,
+                            &election_id,
+                            None,
+                        ) {
+                            let second_attempt = lock_service.acquire_lock_with_token(
+                                &salt_manager,
+                                &token2.token_id,
+                                &voter_hash_str,
+                                &election_id,
+                                VotingMethod::Analog,
+                            );
                             if matches!(second_attempt, Ok(LockResult::AlreadyVoted { .. })) {
                                 let mut count = operations_completed.lock().unwrap();
                                 *count += 1;
@@ -947,16 +1112,23 @@ async fn test_state_consistency_under_pressure() -> Result<()> {
     }
 
     let final_operations = *operations_completed.lock().unwrap();
-    println!("✅ State consistency under pressure: {} operations completed correctly", final_operations);
+    println!(
+        "✅ State consistency under pressure: {final_operations} operations completed correctly"
+    );
 
     // Verify final state is consistent
     let final_stats = lock_service.get_stats()?;
-    println!("   Final stats: {} completions, {} active locks",
-             final_stats.total_completions, final_stats.active_locks);
+    println!(
+        "   Final stats: {} completions, {} active locks",
+        final_stats.total_completions, final_stats.active_locks
+    );
 
     // State should be consistent
     assert_eq!(final_stats.active_locks, 0, "No locks should remain active");
-    assert_eq!(final_stats.total_completions, final_operations, "Completion count should match");
+    assert_eq!(
+        final_stats.total_completions, final_operations,
+        "Completion count should match"
+    );
 
     Ok(())
 }
@@ -990,13 +1162,18 @@ async fn test_memory_cleanup_after_operations() -> Result<()> {
     let mut created_tokens = Vec::new();
     for i in 0..50 {
         let voter_hash_str = hex::encode([i as u8; 32]);
-        if let Ok(TokenResult::Issued(token)) = short_token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None) {
+        if let Ok(TokenResult::Issued(token)) =
+            short_token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None)
+        {
             created_tokens.push(token);
         }
     }
 
     let after_creation_stats = short_token_service.get_stats()?;
-    println!("   After creation: {} tokens", after_creation_stats.total_tokens);
+    println!(
+        "   After creation: {} tokens",
+        after_creation_stats.total_tokens
+    );
 
     // Wait for tokens to expire naturally
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1009,11 +1186,22 @@ async fn test_memory_cleanup_after_operations() -> Result<()> {
     println!("   Final tokens: {}", final_stats.total_tokens);
 
     // Memory should be cleaned up (expired tokens removed)
-    assert!(cleanup_stats.total_removed > 0, "Should clean up expired tokens");
-    assert!(final_stats.total_tokens < after_creation_stats.total_tokens, "Token count should decrease after cleanup");
+    assert!(
+        cleanup_stats.total_removed > 0,
+        "Should clean up expired tokens"
+    );
+    assert!(
+        final_stats.total_tokens < after_creation_stats.total_tokens,
+        "Token count should decrease after cleanup"
+    );
 
     // Test that the system continues to work after cleanup
-    let post_cleanup_token = short_token_service.issue_token(&salt_manager, &hex::encode([99u8; 32]), &election_id, None)?;
+    let post_cleanup_token = short_token_service.issue_token(
+        &salt_manager,
+        &hex::encode([99u8; 32]),
+        &election_id,
+        None,
+    )?;
     match post_cleanup_token {
         TokenResult::Issued(_) => {
             println!("✅ System works normally after memory cleanup");
@@ -1046,15 +1234,18 @@ fn test_secure_memory_operations() {
 
     // Test constant-time comparison with various inputs
     let test_cases = [
-        ([0u8; 32], [0u8; 32], true),   // Equal
-        ([0u8; 32], [1u8; 32], false), // Different
-        ([0xFFu8; 32], [0xFFu8; 32], true), // Equal high values
+        ([0u8; 32], [0u8; 32], true),        // Equal
+        ([0u8; 32], [1u8; 32], false),       // Different
+        ([0xFFu8; 32], [0xFFu8; 32], true),  // Equal high values
         ([0xFFu8; 32], [0xFEu8; 32], false), // Different high values
     ];
 
     for (a, b, expected) in &test_cases {
         let result = SecureMemory::constant_time_eq(a, b);
-        assert_eq!(result, *expected, "Constant-time comparison failed for {:?} vs {:?}", a, b);
+        assert_eq!(
+            result, *expected,
+            "Constant-time comparison failed for {a:?} vs {b:?}"
+        );
     }
 
     println!("✅ Constant-time comparison: All test cases passed");
@@ -1063,7 +1254,10 @@ fn test_secure_memory_operations() {
     let short_array = [1u8; 16];
     let long_array = [1u8; 32];
     let different_length_result = SecureMemory::constant_time_eq(&short_array, &long_array);
-    assert!(!different_length_result, "Different length arrays should not be equal");
+    assert!(
+        !different_length_result,
+        "Different length arrays should not be equal"
+    );
 
     println!("✅ Different length arrays properly handled");
 }
@@ -1098,21 +1292,72 @@ async fn test_full_system_stress() -> Result<()> {
 
         let handle = tokio::spawn(async move {
             for op_id in 0..operations_per_user {
-                let voter_hash_str = hex::encode([user_id as u8, op_id as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+                let voter_hash_str = hex::encode([
+                    user_id as u8,
+                    op_id as u8,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ]);
 
                 // Full operation: Issue token -> Lock -> Vote -> Complete
                 let operation_result = async {
-                    let token_result = token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, Some(format!("stress_session_{}_{}", user_id, op_id)))?;
-                    let token = match token_result { TokenResult::Issued(t) => t, _ => return Err(voting_error!("Token not issued")) };
+                    let token_result = token_service.issue_token(
+                        &salt_manager,
+                        &voter_hash_str,
+                        &election_id,
+                        Some(format!("stress_session_{user_id}_{op_id}")),
+                    )?;
+                    let token = match token_result {
+                        TokenResult::Issued(t) => t,
+                        _ => return Err(voting_error!("Token not issued")),
+                    };
 
-                    let lock_result = lock_service.acquire_lock_with_token(&salt_manager, &token.token_id, &voter_hash_str, &election_id, VotingMethod::Digital)?;
-                    let voting_lock = match lock_result { LockResult::Acquired(l) => l, _ => return Err(voting_error!("Lock not acquired")) };
+                    let lock_result = lock_service.acquire_lock_with_token(
+                        &salt_manager,
+                        &token.token_id,
+                        &voter_hash_str,
+                        &election_id,
+                        VotingMethod::Digital,
+                    )?;
+                    let voting_lock = match lock_result {
+                        LockResult::Acquired(l) => l,
+                        _ => return Err(voting_error!("Lock not acquired")),
+                    };
 
                     let vote_id = Uuid::new_v4();
                     lock_service.complete_voting_with_token_cleanup(&voting_lock, Some(vote_id))?;
 
                     Ok::<(), vote::Error>(())
-                }.await;
+                }
+                .await;
 
                 match operation_result {
                     Ok(()) => {
@@ -1139,7 +1384,8 @@ async fn test_full_system_stress() -> Result<()> {
         for handle in handles {
             let _ = handle.await;
         }
-    }).await;
+    })
+    .await;
 
     match results {
         Ok(_) => println!("✅ All operations completed within timeout"),
@@ -1151,20 +1397,32 @@ async fn test_full_system_stress() -> Result<()> {
     let total_operations = concurrent_users * operations_per_user;
 
     println!("✅ Full system stress test results:");
-    println!("   Total operations attempted: {}", total_operations);
-    println!("   Successful operations: {}", final_successful);
-    println!("   Failed operations: {}", final_failed);
-    println!("   Success rate: {:.2}%", (final_successful as f64 / total_operations as f64) * 100.0);
+    println!("   Total operations attempted: {total_operations}");
+    println!("   Successful operations: {final_successful}");
+    println!("   Failed operations: {final_failed}");
+    println!(
+        "   Success rate: {:.2}%",
+        (final_successful as f64 / total_operations as f64) * 100.0
+    );
 
     let final_stats = lock_service.get_stats()?;
     println!("   Final system state:");
     println!("     Total completions: {}", final_stats.total_completions);
     println!("     Active locks: {}", final_stats.active_locks);
-    println!("     Total tokens: {}", final_stats.token_stats.total_tokens);
+    println!(
+        "     Total tokens: {}",
+        final_stats.token_stats.total_tokens
+    );
 
     // System should handle substantial load
-    assert!(final_successful > total_operations / 2, "Should handle at least 50% of operations successfully");
-    assert_eq!(final_stats.active_locks, 0, "All locks should be cleaned up");
+    assert!(
+        final_successful > total_operations / 2,
+        "Should handle at least 50% of operations successfully"
+    );
+    assert_eq!(
+        final_stats.active_locks, 0,
+        "All locks should be cleaned up"
+    );
 
     Ok(())
 }
@@ -1188,14 +1446,15 @@ async fn test_operation_timeouts() -> Result<()> {
     let token_operation = timeout(timeout_duration, async {
         // This should complete quickly
         token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None)
-    }).await;
+    })
+    .await;
 
     match token_operation {
         Ok(Ok(TokenResult::Issued(_))) => {
             println!("✅ Token operation completed within timeout");
         }
         Ok(Ok(_)) => println!("✅ Token operation completed with expected result"),
-        Ok(Err(e)) => println!("⚠️ Token operation failed: {}", e),
+        Ok(Err(e)) => println!("⚠️ Token operation failed: {e}"),
         Err(_) => panic!("Token operation should not timeout with reasonable deadline"),
     }
 
@@ -1203,7 +1462,8 @@ async fn test_operation_timeouts() -> Result<()> {
     let very_short_timeout = Duration::from_nanos(1);
     let short_timeout_result = timeout(very_short_timeout, async {
         token_service.issue_token(&salt_manager, &voter_hash_str, &election_id, None)
-    }).await;
+    })
+    .await;
 
     match short_timeout_result {
         Err(_) => {
@@ -1242,7 +1502,7 @@ async fn test_edge_case_coverage_summary() -> Result<()> {
     ];
 
     for category in categories {
-        println!("   {}", category);
+        println!("   {category}");
     }
 
     println!("\n🏦 Banking-Grade Security Features Verified:");

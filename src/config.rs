@@ -8,10 +8,9 @@
 //! - Configuration drift detection
 //! - Hot-reload preparation interfaces
 
-use crate::{Error, Result};
 use crate::crypto::SecureMemory;
+use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Configuration validation error with detailed context
@@ -98,7 +97,9 @@ impl SecurityConfig {
                     validation_errors.push(
                         ConfigValidationError::new("CRYPTO_VOTER_SALT", &err.to_string())
                             .with_suggestion("Generate using: openssl rand -base64 32")
-                            .with_security_impact("Critical: Voter anonymization compromised without proper salt")
+                            .with_security_impact(
+                                "Critical: Voter anonymization compromised without proper salt",
+                            ),
                     );
                     String::new() // Use empty string to continue validation
                 } else {
@@ -107,9 +108,12 @@ impl SecurityConfig {
             }
             Err(_) => {
                 validation_errors.push(
-                    ConfigValidationError::new("CRYPTO_VOTER_SALT", "Environment variable required")
-                        .with_suggestion("Set CRYPTO_VOTER_SALT=<base64-encoded-32-bytes>")
-                        .with_security_impact("Critical: System cannot operate without voter salt")
+                    ConfigValidationError::new(
+                        "CRYPTO_VOTER_SALT",
+                        "Environment variable required",
+                    )
+                    .with_suggestion("Set CRYPTO_VOTER_SALT=<base64-encoded-32-bytes>")
+                    .with_security_impact("Critical: System cannot operate without voter salt"),
                 );
                 String::new()
             }
@@ -122,7 +126,9 @@ impl SecurityConfig {
                     validation_errors.push(
                         ConfigValidationError::new("CRYPTO_TOKEN_SALT", &err.to_string())
                             .with_suggestion("Generate using: openssl rand -base64 32")
-                            .with_security_impact("Critical: Token security compromised without proper salt")
+                            .with_security_impact(
+                                "Critical: Token security compromised without proper salt",
+                            ),
                     );
                     String::new()
                 } else {
@@ -131,9 +137,12 @@ impl SecurityConfig {
             }
             Err(_) => {
                 validation_errors.push(
-                    ConfigValidationError::new("CRYPTO_TOKEN_SALT", "Environment variable required")
-                        .with_suggestion("Set CRYPTO_TOKEN_SALT=<base64-encoded-32-bytes>")
-                        .with_security_impact("Critical: System cannot operate without token salt")
+                    ConfigValidationError::new(
+                        "CRYPTO_TOKEN_SALT",
+                        "Environment variable required",
+                    )
+                    .with_suggestion("Set CRYPTO_TOKEN_SALT=<base64-encoded-32-bytes>")
+                    .with_security_impact("Critical: System cannot operate without token salt"),
                 );
                 String::new()
             }
@@ -142,35 +151,35 @@ impl SecurityConfig {
         // Load and validate numeric configurations
         let key_expiry_seconds = Self::parse_u64_env(
             "CRYPTO_KEY_EXPIRY_SECONDS",
-            86400, // 24 hours default
+            86400,                // 24 hours default
             Some((3600, 604800)), // 1 hour to 1 week range
             &mut validation_errors,
         );
 
         let max_crypto_ops_per_second = Self::parse_u32_env(
             "CRYPTO_MAX_OPS_PER_SECOND",
-            10, // Conservative default
+            10,               // Conservative default
             Some((1, 10000)), // 1 to 10K ops/sec range
             &mut validation_errors,
         );
 
         let max_timestamp_age_seconds = Self::parse_u64_env(
             "CRYPTO_MAX_TIMESTAMP_AGE_SECONDS",
-            300, // 5 minutes default
+            300,              // 5 minutes default
             Some((60, 3600)), // 1 minute to 1 hour range
             &mut validation_errors,
         );
 
         let max_failed_attempts = Self::parse_u32_env(
             "SECURITY_MAX_FAILED_ATTEMPTS",
-            5, // Default 5 attempts
+            5,              // Default 5 attempts
             Some((1, 100)), // 1 to 100 attempts range
             &mut validation_errors,
         );
 
         let security_incident_threshold = Self::parse_f64_env(
             "SECURITY_INCIDENT_THRESHOLD",
-            0.6, // Default 60% threshold
+            0.6,              // Default 60% threshold
             Some((0.1, 1.0)), // 10% to 100% range
             &mut validation_errors,
         );
@@ -202,22 +211,28 @@ impl SecurityConfig {
         );
 
         // Validate key rotation configuration consistency
-        if let (Some(interval), Some(overlap)) = (key_rotation_interval_seconds, key_rotation_overlap_seconds) {
+        if let (Some(interval), Some(overlap)) =
+            (key_rotation_interval_seconds, key_rotation_overlap_seconds)
+        {
             if overlap >= interval {
                 validation_errors.push(
                     ConfigValidationError::new(
                         "CRYPTO_KEY_ROTATION_OVERLAP_SECONDS",
-                        "Overlap period must be less than rotation interval"
+                        "Overlap period must be less than rotation interval",
                     )
-                        .with_suggestion(&format!("Set to less than {} seconds", interval))
-                        .with_security_impact("Key rotation will fail with invalid timing configuration")
+                    .with_suggestion(&format!("Set to less than {interval} seconds"))
+                    .with_security_impact(
+                        "Key rotation will fail with invalid timing configuration",
+                    ),
                 );
             }
         }
 
         // Return errors if any validation failed
         if !validation_errors.is_empty() {
-            return Err(Error::internal(Self::format_validation_errors(&validation_errors)));
+            return Err(Error::internal(Self::format_validation_errors(
+                &validation_errors,
+            )));
         }
 
         Ok(Self {
@@ -239,19 +254,21 @@ impl SecurityConfig {
     pub fn for_testing() -> Result<Self> {
         use base64::Engine;
         // Generate secure random salts for testing
-        let voter_salt = base64::engine::general_purpose::STANDARD.encode(&SecureMemory::secure_random_bytes::<32>());
-        let token_salt = base64::engine::general_purpose::STANDARD.encode(&SecureMemory::secure_random_bytes::<32>());
+        let voter_salt = base64::engine::general_purpose::STANDARD
+            .encode(SecureMemory::secure_random_bytes::<32>());
+        let token_salt = base64::engine::general_purpose::STANDARD
+            .encode(SecureMemory::secure_random_bytes::<32>());
 
         Ok(Self {
             voter_salt,
             token_salt,
-            key_expiry_seconds: 3600, // 1 hour for testing
-            max_crypto_ops_per_second: 100, // Relaxed for testing
-            max_timestamp_age_seconds: 300, // 5 minutes
+            key_expiry_seconds: 3600,                 // 1 hour for testing
+            max_crypto_ops_per_second: 100,           // Relaxed for testing
+            max_timestamp_age_seconds: 300,           // 5 minutes
             key_rotation_interval_seconds: Some(300), // 5 minutes for testing
             key_rotation_overlap_seconds: Some(60),   // 1 minute for testing
-            max_failed_attempts: 3, // Lower for testing
-            security_incident_threshold: 0.5, // 50% for testing
+            max_failed_attempts: 3,                   // Lower for testing
+            security_incident_threshold: 0.5,         // 50% for testing
             enable_security_monitoring: true,
             enable_audit_verification: true,
         })
@@ -273,16 +290,22 @@ impl SecurityConfig {
         // Validate numeric ranges
         if self.key_expiry_seconds < 3600 {
             errors.push(
-                ConfigValidationError::new("key_expiry_seconds", "Key expiry too short for production")
-                    .with_suggestion("Use at least 3600 seconds (1 hour)")
-                    .with_security_impact("Short key lifetimes may impact system performance")
+                ConfigValidationError::new(
+                    "key_expiry_seconds",
+                    "Key expiry too short for production",
+                )
+                .with_suggestion("Use at least 3600 seconds (1 hour)")
+                .with_security_impact("Short key lifetimes may impact system performance"),
             );
         }
 
         if self.max_crypto_ops_per_second == 0 {
             errors.push(
-                ConfigValidationError::new("max_crypto_ops_per_second", "Rate limit cannot be zero")
-                    .with_security_impact("Zero rate limit prevents all operations")
+                ConfigValidationError::new(
+                    "max_crypto_ops_per_second",
+                    "Rate limit cannot be zero",
+                )
+                .with_security_impact("Zero rate limit prevents all operations"),
             );
         }
 
@@ -290,32 +313,44 @@ impl SecurityConfig {
             errors.push(
                 ConfigValidationError::new("max_timestamp_age_seconds", "Timestamp age too long")
                     .with_suggestion("Use maximum 3600 seconds (1 hour)")
-                    .with_security_impact("Long timestamp windows increase replay attack risk")
+                    .with_security_impact("Long timestamp windows increase replay attack risk"),
             );
         }
 
         if self.security_incident_threshold < 0.0 || self.security_incident_threshold > 1.0 {
             errors.push(
-                ConfigValidationError::new("security_incident_threshold", "Threshold must be between 0.0 and 1.0")
-                    .with_security_impact("Invalid threshold disables security incident detection")
+                ConfigValidationError::new(
+                    "security_incident_threshold",
+                    "Threshold must be between 0.0 and 1.0",
+                )
+                .with_security_impact("Invalid threshold disables security incident detection"),
             );
         }
 
         // Validate key rotation consistency (basic checks only)
-        if let (Some(interval), Some(overlap)) = (self.key_rotation_interval_seconds, self.key_rotation_overlap_seconds) {
+        if let (Some(interval), Some(overlap)) = (
+            self.key_rotation_interval_seconds,
+            self.key_rotation_overlap_seconds,
+        ) {
             if overlap >= interval {
                 errors.push(
-                    ConfigValidationError::new("key_rotation_overlap_seconds", "Overlap must be less than interval")
-                        .with_security_impact("Invalid key rotation timing compromises key security")
+                    ConfigValidationError::new(
+                        "key_rotation_overlap_seconds",
+                        "Overlap must be less than interval",
+                    )
+                    .with_security_impact("Invalid key rotation timing compromises key security"),
                 );
             }
 
             // Basic minimum check (allow shorter intervals for testing)
             if interval < 60 {
                 errors.push(
-                    ConfigValidationError::new("key_rotation_interval_seconds", "Key rotation interval too short")
-                        .with_suggestion("Use at least 60 seconds")
-                        .with_security_impact("Very short intervals may cause system instability")
+                    ConfigValidationError::new(
+                        "key_rotation_interval_seconds",
+                        "Key rotation interval too short",
+                    )
+                    .with_suggestion("Use at least 60 seconds")
+                    .with_security_impact("Very short intervals may cause system instability"),
                 );
             }
         }
@@ -339,23 +374,34 @@ impl SecurityConfig {
         // Additional production-specific validations
         if self.max_crypto_ops_per_second > 1000 {
             errors.push(
-                ConfigValidationError::new("max_crypto_ops_per_second", "Rate limit very high for production")
-                    .with_suggestion("Consider lower limit for better DoS protection")
-                    .with_security_impact("High rate limits may allow DoS attacks")
+                ConfigValidationError::new(
+                    "max_crypto_ops_per_second",
+                    "Rate limit very high for production",
+                )
+                .with_suggestion("Consider lower limit for better DoS protection")
+                .with_security_impact("High rate limits may allow DoS attacks"),
             );
         }
 
         if !self.enable_security_monitoring {
             errors.push(
-                ConfigValidationError::new("enable_security_monitoring", "Security monitoring should be enabled in production")
-                    .with_security_impact("Critical: Security monitoring required for banking-grade deployment")
+                ConfigValidationError::new(
+                    "enable_security_monitoring",
+                    "Security monitoring should be enabled in production",
+                )
+                .with_security_impact(
+                    "Critical: Security monitoring required for banking-grade deployment",
+                ),
             );
         }
 
         if !self.enable_audit_verification {
             errors.push(
-                ConfigValidationError::new("enable_audit_verification", "Audit verification should be enabled in production")
-                    .with_security_impact("Critical: Audit verification required for compliance")
+                ConfigValidationError::new(
+                    "enable_audit_verification",
+                    "Audit verification should be enabled in production",
+                )
+                .with_security_impact("Critical: Audit verification required for compliance"),
             );
         }
 
@@ -364,7 +410,7 @@ impl SecurityConfig {
             errors.push(
                 ConfigValidationError::new("salts", "Salts may be too simple for production")
                     .with_suggestion("Use longer, more complex base64-encoded salts")
-                    .with_security_impact("Weak salts compromise cryptographic security")
+                    .with_security_impact("Weak salts compromise cryptographic security"),
             );
         }
 
@@ -372,9 +418,14 @@ impl SecurityConfig {
         if let Some(interval) = self.key_rotation_interval_seconds {
             if interval < 3600 {
                 errors.push(
-                    ConfigValidationError::new("key_rotation_interval_seconds", "Key rotation interval too frequent for production")
-                        .with_suggestion("Use at least 3600 seconds (1 hour)")
-                        .with_security_impact("Frequent key rotation may impact system stability in production")
+                    ConfigValidationError::new(
+                        "key_rotation_interval_seconds",
+                        "Key rotation interval too frequent for production",
+                    )
+                    .with_suggestion("Use at least 3600 seconds (1 hour)")
+                    .with_security_impact(
+                        "Frequent key rotation may impact system stability in production",
+                    ),
                 );
             }
         }
@@ -399,56 +450,82 @@ impl SecurityConfig {
 
         // Security configuration analysis
         if self.max_timestamp_age_seconds > 600 {
-            report.warnings.push("Timestamp age window longer than 10 minutes".to_string());
+            report
+                .warnings
+                .push("Timestamp age window longer than 10 minutes".to_string());
             report.security_score -= 0.1;
         }
 
         if self.max_failed_attempts > 10 {
-            report.warnings.push("High failed attempt threshold may allow brute force attacks".to_string());
+            report
+                .warnings
+                .push("High failed attempt threshold may allow brute force attacks".to_string());
             report.security_score -= 0.1;
         }
 
         if self.security_incident_threshold > 0.8 {
-            report.recommendations.push("Consider lowering security incident threshold for more sensitive detection".to_string());
+            report.recommendations.push(
+                "Consider lowering security incident threshold for more sensitive detection"
+                    .to_string(),
+            );
         }
 
         // Key rotation analysis
         if let Some(interval) = self.key_rotation_interval_seconds {
-            if interval > 604800 { // 1 week
-                report.warnings.push("Key rotation interval longer than 1 week".to_string());
+            if interval > 604800 {
+                // 1 week
+                report
+                    .warnings
+                    .push("Key rotation interval longer than 1 week".to_string());
                 report.security_score -= 0.05;
             }
         } else {
-            report.critical_issues.push("Key rotation not configured - required for banking-grade security".to_string());
+            report.critical_issues.push(
+                "Key rotation not configured - required for banking-grade security".to_string(),
+            );
             report.overall_ready = false;
             report.security_score -= 0.3;
         }
 
         // Monitoring and audit checks
         if !self.enable_security_monitoring {
-            report.critical_issues.push("Security monitoring disabled - required for production".to_string());
+            report
+                .critical_issues
+                .push("Security monitoring disabled - required for production".to_string());
             report.overall_ready = false;
             report.security_score -= 0.2;
         }
 
         if !self.enable_audit_verification {
-            report.critical_issues.push("Audit verification disabled - required for compliance".to_string());
+            report
+                .critical_issues
+                .push("Audit verification disabled - required for compliance".to_string());
             report.overall_ready = false;
             report.security_score -= 0.2;
         }
 
         // Rate limiting analysis
         if self.max_crypto_ops_per_second < 5 {
-            report.warnings.push("Very low rate limit may impact performance".to_string());
+            report
+                .warnings
+                .push("Very low rate limit may impact performance".to_string());
         } else if self.max_crypto_ops_per_second > 100 {
-            report.warnings.push("High rate limit may allow DoS attacks".to_string());
+            report
+                .warnings
+                .push("High rate limit may allow DoS attacks".to_string());
             report.security_score -= 0.05;
         }
 
         // Compliance recommendations
-        report.compliance_notes.push("Ensure salts are stored in HSM/Vault for PCI DSS compliance".to_string());
-        report.compliance_notes.push("Document all cryptographic algorithms for SOX compliance".to_string());
-        report.compliance_notes.push("Enable comprehensive audit logging for regulatory requirements".to_string());
+        report
+            .compliance_notes
+            .push("Ensure salts are stored in HSM/Vault for PCI DSS compliance".to_string());
+        report
+            .compliance_notes
+            .push("Document all cryptographic algorithms for SOX compliance".to_string());
+        report
+            .compliance_notes
+            .push("Enable comprehensive audit logging for regulatory requirements".to_string());
 
         // Final score adjustment
         report.security_score = report.security_score.max(0.0).min(1.0);
@@ -474,8 +551,11 @@ impl SecurityConfig {
                     if let Some((min, max)) = range {
                         if parsed < min || parsed > max {
                             errors.push(
-                                ConfigValidationError::new(key, &format!("Value {} out of range [{}, {}]", parsed, min, max))
-                                    .with_suggestion(&format!("Use value between {} and {}", min, max))
+                                ConfigValidationError::new(
+                                    key,
+                                    &format!("Value {parsed} out of range [{min}, {max}]"),
+                                )
+                                .with_suggestion(&format!("Use value between {min} and {max}")),
                             );
                             default
                         } else {
@@ -488,7 +568,7 @@ impl SecurityConfig {
                 Err(_) => {
                     errors.push(
                         ConfigValidationError::new(key, "Invalid number format")
-                            .with_suggestion("Use a valid positive integer")
+                            .with_suggestion("Use a valid positive integer"),
                     );
                     default
                 }
@@ -509,8 +589,11 @@ impl SecurityConfig {
                     if let Some((min, max)) = range {
                         if parsed < min || parsed > max {
                             errors.push(
-                                ConfigValidationError::new(key, &format!("Value {} out of range [{}, {}]", parsed, min, max))
-                                    .with_suggestion(&format!("Use value between {} and {}", min, max))
+                                ConfigValidationError::new(
+                                    key,
+                                    &format!("Value {parsed} out of range [{min}, {max}]"),
+                                )
+                                .with_suggestion(&format!("Use value between {min} and {max}")),
                             );
                             default
                         } else {
@@ -523,7 +606,7 @@ impl SecurityConfig {
                 Err(_) => {
                     errors.push(
                         ConfigValidationError::new(key, "Invalid number format")
-                            .with_suggestion("Use a valid positive integer")
+                            .with_suggestion("Use a valid positive integer"),
                     );
                     default
                 }
@@ -544,8 +627,11 @@ impl SecurityConfig {
                     if let Some((min, max)) = range {
                         if parsed < min || parsed > max {
                             errors.push(
-                                ConfigValidationError::new(key, &format!("Value {} out of range [{}, {}]", parsed, min, max))
-                                    .with_suggestion(&format!("Use value between {} and {}", min, max))
+                                ConfigValidationError::new(
+                                    key,
+                                    &format!("Value {parsed} out of range [{min}, {max}]"),
+                                )
+                                .with_suggestion(&format!("Use value between {min} and {max}")),
                             );
                             default
                         } else {
@@ -558,7 +644,7 @@ impl SecurityConfig {
                 Err(_) => {
                     errors.push(
                         ConfigValidationError::new(key, "Invalid number format")
-                            .with_suggestion("Use a valid decimal number (e.g., 0.6)")
+                            .with_suggestion("Use a valid decimal number (e.g., 0.6)"),
                     );
                     default
                 }
@@ -578,8 +664,11 @@ impl SecurityConfig {
                     if let Some((min, max)) = range {
                         if parsed < min || parsed > max {
                             errors.push(
-                                ConfigValidationError::new(key, &format!("Value {} out of range [{}, {}]", parsed, min, max))
-                                    .with_suggestion(&format!("Use value between {} and {}", min, max))
+                                ConfigValidationError::new(
+                                    key,
+                                    &format!("Value {parsed} out of range [{min}, {max}]"),
+                                )
+                                .with_suggestion(&format!("Use value between {min} and {max}")),
                             );
                             None
                         } else {
@@ -592,7 +681,7 @@ impl SecurityConfig {
                 Err(_) => {
                     errors.push(
                         ConfigValidationError::new(key, "Invalid number format")
-                            .with_suggestion("Use a valid positive integer")
+                            .with_suggestion("Use a valid positive integer"),
                     );
                     None
                 }
@@ -601,25 +690,20 @@ impl SecurityConfig {
         }
     }
 
-    fn parse_bool_env(
-        key: &str,
-        default: bool,
-        errors: &mut Vec<ConfigValidationError>,
-    ) -> bool {
+    fn parse_bool_env(key: &str, default: bool, errors: &mut Vec<ConfigValidationError>) -> bool {
         match std::env::var(key) {
-            Ok(value) => {
-                match value.to_lowercase().as_str() {
-                    "true" | "1" | "yes" | "on" | "enabled" => true,
-                    "false" | "0" | "no" | "off" | "disabled" => false,
-                    _ => {
-                        errors.push(
-                            ConfigValidationError::new(key, "Invalid boolean format")
-                                .with_suggestion("Use: true/false, 1/0, yes/no, on/off, enabled/disabled")
-                        );
-                        default
-                    }
+            Ok(value) => match value.to_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" | "enabled" => true,
+                "false" | "0" | "no" | "off" | "disabled" => false,
+                _ => {
+                    errors.push(
+                        ConfigValidationError::new(key, "Invalid boolean format").with_suggestion(
+                            "Use: true/false, 1/0, yes/no, on/off, enabled/disabled",
+                        ),
+                    );
+                    default
                 }
-            }
+            },
             Err(_) => default,
         }
     }
@@ -627,20 +711,25 @@ impl SecurityConfig {
     /// Validate a base64-encoded salt with enhanced security checks
     fn validate_salt(salt: &str, name: &str) -> Result<()> {
         if salt.is_empty() {
-            return Err(Error::internal(&format!("{} cannot be empty", name)));
+            return Err(Error::internal(format!("{name} cannot be empty")));
         }
 
         use base64::Engine;
-        let decoded = base64::engine::general_purpose::STANDARD.decode(salt)
-            .map_err(|_| Error::internal(&format!("{} must be valid base64", name)))?;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(salt)
+            .map_err(|_| Error::internal(format!("{name} must be valid base64")))?;
 
         if decoded.len() < 32 {
-            return Err(Error::internal(&format!("{} must be at least 32 bytes when decoded", name)));
+            return Err(Error::internal(format!(
+                "{name} must be at least 32 bytes when decoded"
+            )));
         }
 
         // Check for weak patterns (all same byte, sequential, etc.)
         if Self::is_weak_salt(&decoded) {
-            return Err(Error::internal(&format!("{} appears to be weak or predictable", name)));
+            return Err(Error::internal(format!(
+                "{name} appears to be weak or predictable"
+            )));
         }
 
         Ok(())
@@ -661,7 +750,7 @@ impl SecurityConfig {
         // Check for sequential patterns
         let mut sequential_count = 0;
         for i in 1..salt.len() {
-            if salt[i] == salt[i-1].wrapping_add(1) {
+            if salt[i] == salt[i - 1].wrapping_add(1) {
                 sequential_count += 1;
             }
         }
@@ -674,14 +763,19 @@ impl SecurityConfig {
         let mut result = String::from("Configuration validation failed:\n");
 
         for (i, error) in errors.iter().enumerate() {
-            result.push_str(&format!("{}. Field '{}': {}\n", i + 1, error.field, error.error));
+            result.push_str(&format!(
+                "{}. Field '{}': {}\n",
+                i + 1,
+                error.field,
+                error.error
+            ));
 
             if let Some(ref suggestion) = error.suggestion {
-                result.push_str(&format!("   Suggestion: {}\n", suggestion));
+                result.push_str(&format!("   Suggestion: {suggestion}\n"));
             }
 
             if let Some(ref impact) = error.security_impact {
-                result.push_str(&format!("   Security Impact: {}\n", impact));
+                result.push_str(&format!("   Security Impact: {impact}\n"));
             }
 
             result.push('\n');
@@ -693,7 +787,8 @@ impl SecurityConfig {
     /// Get voter salt as bytes with validation
     pub fn voter_salt_bytes(&self) -> Result<Vec<u8>> {
         use base64::Engine;
-        let decoded = base64::engine::general_purpose::STANDARD.decode(&self.voter_salt)
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&self.voter_salt)
             .map_err(|_| Error::internal("Invalid voter salt"))?;
 
         if decoded.len() < 32 {
@@ -706,7 +801,8 @@ impl SecurityConfig {
     /// Get token salt as bytes with validation
     pub fn token_salt_bytes(&self) -> Result<Vec<u8>> {
         use base64::Engine;
-        let decoded = base64::engine::general_purpose::STANDARD.decode(&self.token_salt)
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&self.token_salt)
             .map_err(|_| Error::internal("Invalid token salt"))?;
 
         if decoded.len() < 32 {
@@ -719,7 +815,7 @@ impl SecurityConfig {
     /// Create key rotation configuration from security config with validation
     pub fn key_rotation_config(&self) -> Result<crate::crypto::key_rotation::KeyRotationConfig> {
         let rotation_interval = self.key_rotation_interval_seconds.unwrap_or(86400); // 24 hours default
-        let overlap_period = self.key_rotation_overlap_seconds.unwrap_or(3600);     // 1 hour default
+        let overlap_period = self.key_rotation_overlap_seconds.unwrap_or(3600); // 1 hour default
 
         // Calculate appropriate check interval
         let check_interval = std::cmp::min(3600, rotation_interval / 4);
@@ -728,11 +824,13 @@ impl SecurityConfig {
             rotation_interval,
             overlap_period,
             check_interval,
-            max_previous_keys: 3,  // Keep 3 previous keys
+            max_previous_keys: 3, // Keep 3 previous keys
         };
 
         // Validate the configuration
-        config.validate().map_err(|e| Error::internal(&format!("Key rotation config invalid: {}", e)))?;
+        config
+            .validate()
+            .map_err(|e| Error::internal(format!("Key rotation config invalid: {e}")))?;
 
         Ok(config)
     }
@@ -741,16 +839,22 @@ impl SecurityConfig {
     pub fn token_config(&self) -> crate::crypto::voting_token::TokenConfig {
         crate::crypto::voting_token::TokenConfig {
             lifetime_seconds: std::cmp::min(self.key_expiry_seconds, 7200), // Max 2 hours for tokens
-            cleanup_interval_seconds: 300, // 5 minutes
+            cleanup_interval_seconds: 300,                                  // 5 minutes
             max_tokens_per_voter: if self.max_failed_attempts > 5 { 5 } else { 3 }, // Based on security level
         }
     }
 
     /// Get security monitoring configuration
-    pub fn security_monitoring_config(&self) -> crate::crypto::security_monitoring::SecurityMonitoringConfig {
+    pub fn security_monitoring_config(
+        &self,
+    ) -> crate::crypto::security_monitoring::SecurityMonitoringConfig {
         crate::crypto::security_monitoring::SecurityMonitoringConfig {
             metrics_window_seconds: 300, // 5 minutes
-            timing_anomaly_threshold_micros: if self.enable_security_monitoring { 50 } else { 100 },
+            timing_anomaly_threshold_micros: if self.enable_security_monitoring {
+                50
+            } else {
+                100
+            },
             dos_detection_enabled: self.enable_security_monitoring,
             authentication_pattern_analysis: self.enable_security_monitoring,
             baseline_update_interval_seconds: 3600, // 1 hour
@@ -777,14 +881,23 @@ impl ProductionReadinessReport {
         report.push_str("🏦 PRODUCTION READINESS ASSESSMENT\n");
         report.push_str("==================================\n\n");
 
-        report.push_str(&format!("Overall Status: {}\n",
-                                 if self.overall_ready { "✅ READY" } else { "❌ NOT READY" }));
-        report.push_str(&format!("Security Score: {:.1}%\n\n", self.security_score * 100.0));
+        report.push_str(&format!(
+            "Overall Status: {}\n",
+            if self.overall_ready {
+                "✅ READY"
+            } else {
+                "❌ NOT READY"
+            }
+        ));
+        report.push_str(&format!(
+            "Security Score: {:.1}%\n\n",
+            self.security_score * 100.0
+        ));
 
         if !self.critical_issues.is_empty() {
             report.push_str("🚨 CRITICAL ISSUES:\n");
             for issue in &self.critical_issues {
-                report.push_str(&format!("   • {}\n", issue));
+                report.push_str(&format!("   • {issue}\n"));
             }
             report.push('\n');
         }
@@ -792,7 +905,7 @@ impl ProductionReadinessReport {
         if !self.warnings.is_empty() {
             report.push_str("⚠️  WARNINGS:\n");
             for warning in &self.warnings {
-                report.push_str(&format!("   • {}\n", warning));
+                report.push_str(&format!("   • {warning}\n"));
             }
             report.push('\n');
         }
@@ -800,7 +913,7 @@ impl ProductionReadinessReport {
         if !self.recommendations.is_empty() {
             report.push_str("💡 RECOMMENDATIONS:\n");
             for rec in &self.recommendations {
-                report.push_str(&format!("   • {}\n", rec));
+                report.push_str(&format!("   • {rec}\n"));
             }
             report.push('\n');
         }
@@ -808,7 +921,7 @@ impl ProductionReadinessReport {
         if !self.compliance_notes.is_empty() {
             report.push_str("📋 COMPLIANCE NOTES:\n");
             for note in &self.compliance_notes {
-                report.push_str(&format!("   • {}\n", note));
+                report.push_str(&format!("   • {note}\n"));
             }
             report.push('\n');
         }
@@ -871,12 +984,14 @@ impl LoggingConfig {
         }
 
         if let Ok(max_size) = std::env::var("MAX_LOG_FILE_SIZE_MB") {
-            config.max_log_file_size_mb = max_size.parse()
+            config.max_log_file_size_mb = max_size
+                .parse()
                 .map_err(|_| Error::internal("Invalid MAX_LOG_FILE_SIZE_MB"))?;
         }
 
         if let Ok(retention) = std::env::var("LOG_RETENTION_DAYS") {
-            config.log_retention_days = retention.parse()
+            config.log_retention_days = retention
+                .parse()
                 .map_err(|_| Error::internal("Invalid LOG_RETENTION_DAYS"))?;
         }
 
@@ -886,14 +1001,18 @@ impl LoggingConfig {
     fn validate_log_level(level: &str) -> Result<()> {
         match level.to_lowercase().as_str() {
             "trace" | "debug" | "info" | "warn" | "error" => Ok(()),
-            _ => Err(Error::internal("Invalid log level. Use: trace, debug, info, warn, error")),
+            _ => Err(Error::internal(
+                "Invalid log level. Use: trace, debug, info, warn, error",
+            )),
         }
     }
 
     fn validate_log_format(format: &str) -> Result<()> {
         match format.to_lowercase().as_str() {
             "json" | "pretty" | "compact" => Ok(()),
-            _ => Err(Error::internal("Invalid log format. Use: json, pretty, compact")),
+            _ => Err(Error::internal(
+                "Invalid log format. Use: json, pretty, compact",
+            )),
         }
     }
 }
@@ -922,13 +1041,17 @@ impl Config {
         let security = SecurityConfig::from_env()?;
         let logging = LoggingConfig::from_env()?;
 
-        let environment = std::env::var("ENVIRONMENT")
-            .unwrap_or_else(|_| "development".to_string());
+        let environment =
+            std::env::var("ENVIRONMENT").unwrap_or_else(|_| "development".to_string());
 
         // Validate environment
         match environment.as_str() {
-            "development" | "testing" | "staging" | "production" => {},
-            _ => return Err(Error::internal("Invalid ENVIRONMENT. Use: development, testing, staging, production")),
+            "development" | "testing" | "staging" | "production" => {}
+            _ => {
+                return Err(Error::internal(
+                    "Invalid ENVIRONMENT. Use: development, testing, staging, production",
+                ));
+            }
         }
 
         let metadata = ConfigMetadata {
@@ -1001,7 +1124,7 @@ impl Config {
             errors.push(
                 ConfigValidationError::new("environment", "Not configured for production")
                     .with_suggestion("Set ENVIRONMENT=production")
-                    .with_security_impact("Development settings may not be secure for production")
+                    .with_security_impact("Development settings may not be secure for production"),
             );
         }
 
@@ -1013,16 +1136,26 @@ impl Config {
         // Validate logging for production
         if !self.logging.enable_audit_logging {
             errors.push(
-                ConfigValidationError::new("enable_audit_logging", "Audit logging required for production")
-                    .with_security_impact("Compliance: Audit logging required for regulatory compliance")
+                ConfigValidationError::new(
+                    "enable_audit_logging",
+                    "Audit logging required for production",
+                )
+                .with_security_impact(
+                    "Compliance: Audit logging required for regulatory compliance",
+                ),
             );
         }
 
         if self.logging.log_retention_days < 90 {
             errors.push(
-                ConfigValidationError::new("log_retention_days", "Log retention too short for compliance")
-                    .with_suggestion("Use at least 90 days retention")
-                    .with_security_impact("Compliance: Short retention may violate regulatory requirements")
+                ConfigValidationError::new(
+                    "log_retention_days",
+                    "Log retention too short for compliance",
+                )
+                .with_suggestion("Use at least 90 days retention")
+                .with_security_impact(
+                    "Compliance: Short retention may violate regulatory requirements",
+                ),
             );
         }
 
@@ -1045,8 +1178,9 @@ impl Config {
         config_for_checksum.metadata.checksum = None;
         config_for_checksum.metadata.loaded_at = 0; // Normalize timestamp
 
-        let config_json = serde_json::to_string(&config_for_checksum)
-            .map_err(|e| Error::internal(&format!("Failed to serialize config for checksum: {}", e)))?;
+        let config_json = serde_json::to_string(&config_for_checksum).map_err(|e| {
+            Error::internal(format!("Failed to serialize config for checksum: {e}"))
+        })?;
 
         let hash = blake3::hash(config_json.as_bytes());
         Ok(hex::encode(hash.as_bytes()))
@@ -1116,7 +1250,9 @@ impl ConfigManager {
 
     /// Get current configuration
     pub fn get_config(&self) -> Result<Config> {
-        let config = self.current_config.read()
+        let config = self
+            .current_config
+            .read()
             .map_err(|_| Error::internal("Failed to read configuration"))?;
         Ok(config.clone())
     }
@@ -1124,12 +1260,15 @@ impl ConfigManager {
     /// Update configuration (for hot-reload)
     pub fn update_config(&self, new_config: Config) -> Result<()> {
         // Validate new configuration
-        new_config.validate_for_production()
-            .map_err(|errors| Error::internal(&SecurityConfig::format_validation_errors(&errors)))?;
+        new_config
+            .validate_for_production()
+            .map_err(|errors| Error::internal(SecurityConfig::format_validation_errors(&errors)))?;
 
         // Update configuration
         {
-            let mut config = self.current_config.write()
+            let mut config = self
+                .current_config
+                .write()
                 .map_err(|_| Error::internal("Failed to write configuration"))?;
             *config = new_config.clone();
         }
@@ -1143,7 +1282,9 @@ impl ConfigManager {
 
     /// Register configuration watcher
     pub fn register_watcher(&self, watcher: Box<dyn ConfigWatcher + Send + Sync>) -> Result<()> {
-        let mut watchers = self.config_watchers.write()
+        let mut watchers = self
+            .config_watchers
+            .write()
             .map_err(|_| Error::internal("Failed to register config watcher"))?;
         watchers.push(watcher);
         Ok(())
@@ -1151,7 +1292,9 @@ impl ConfigManager {
 
     /// Notify all watchers of configuration change
     fn notify_watchers(&self, config: &Config) -> Result<()> {
-        let watchers = self.config_watchers.read()
+        let watchers = self
+            .config_watchers
+            .read()
             .map_err(|_| Error::internal("Failed to read config watchers"))?;
 
         for watcher in watchers.iter() {
@@ -1211,7 +1354,10 @@ mod tests {
 
         // Test basic validation
         let validation_result = config.validate();
-        assert!(validation_result.is_ok(), "Basic validation should pass for test config");
+        assert!(
+            validation_result.is_ok(),
+            "Basic validation should pass for test config"
+        );
 
         // Test production validation
         let production_result = config.validate_for_production();
@@ -1269,8 +1415,10 @@ mod tests {
 
         // Test health check
         let health_report = manager.health_check().unwrap();
-        println!("Config health: healthy={}, security_score={:.2}",
-                 health_report.healthy, health_report.security_score);
+        println!(
+            "Config health: healthy={}, security_score={:.2}",
+            health_report.healthy, health_report.security_score
+        );
 
         assert!(health_report.security_score > 0.0);
 
@@ -1342,7 +1490,7 @@ mod tests {
         // Should handle errors gracefully
         match config_result {
             Err(e) => {
-                println!("Expected validation error: {}", e);
+                println!("Expected validation error: {e}");
                 assert!(e.to_string().contains("validation failed"));
             }
             Ok(_) => panic!("Should reject invalid configuration"),

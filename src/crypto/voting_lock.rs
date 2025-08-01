@@ -7,8 +7,8 @@
 //! 4. Automatic token invalidation on logout or vote completion
 //! 5. Session-aware security for millions of users
 
-use crate::{voting_error, Result};
-use crate::crypto::voting_token::{VotingTokenService, TokenResult};
+use crate::crypto::voting_token::{TokenResult, VotingTokenService};
+use crate::{Result, voting_error};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -82,11 +82,7 @@ impl VoterLock {
             .unwrap_or_default()
             .as_secs();
 
-        if current_time >= self.expires_at {
-            0
-        } else {
-            self.expires_at - current_time
-        }
+        self.expires_at.saturating_sub(current_time)
     }
 
     /// Generate lock key for storage
@@ -157,9 +153,7 @@ pub enum LockResult {
     },
 
     /// Blocked due to invalid or expired token
-    InvalidToken {
-        reason: String,
-    },
+    InvalidToken { reason: String },
 
     /// Expired lock was removed and new lock acquired
     ExpiredLockRemoved(VoterLock),
@@ -204,27 +198,28 @@ impl VotingLockService {
         election_id: &Uuid,
         method: VotingMethod,
     ) -> Result<LockResult> {
-        let completion_key = format!("voting_completion:{}:{}", voter_hash, election_id);
-        let lock_key = format!("voting_lock:{}:{}", voter_hash, election_id);
+        let completion_key = format!("voting_completion:{voter_hash}:{election_id}");
+        let lock_key = format!("voting_lock:{voter_hash}:{election_id}");
 
         // CRITICAL: Always perform token validation first, regardless of other checks
         // This ensures consistent timing for all code paths
-        let token_validation = self.token_service.validate_token(
-            salt_manager,
-            token_id,
-            voter_hash,
-            election_id,
-        )?;
-        
+        let token_validation =
+            self.token_service
+                .validate_token(salt_manager, token_id, voter_hash, election_id)?;
+
         let valid_token = match token_validation {
             TokenResult::Valid(token) => token,
             TokenResult::Invalid { reason } => {
                 // Still perform dummy completion and lock checks to maintain timing
-                let completions = self.completions.read()
+                let completions = self
+                    .completions
+                    .read()
                     .map_err(|_| voting_error!("Completion service read error"))?;
                 let _dummy_completion_check = completions.get(&completion_key);
 
-                let locks = self.locks.read()
+                let locks = self
+                    .locks
+                    .read()
                     .map_err(|_| voting_error!("Lock service read error"))?;
                 let _dummy_lock_check = locks.get(&lock_key);
 
@@ -232,7 +227,7 @@ impl VotingLockService {
             }
             _ => {
                 return Ok(LockResult::InvalidToken {
-                    reason: "Unexpected token validation result".to_string()
+                    reason: "Unexpected token validation result".to_string(),
                 });
             }
         };
@@ -242,7 +237,9 @@ impl VotingLockService {
 
         // Check if voter has already completed voting
         {
-            let completions = self.completions.read()
+            let completions = self
+                .completions
+                .read()
                 .map_err(|_| voting_error!("Completion service read error"))?;
 
             if let Some(completion) = completions.get(&completion_key) {
@@ -255,7 +252,9 @@ impl VotingLockService {
 
         // Check for active concurrent locks
         {
-            let locks = self.locks.read()
+            let locks = self
+                .locks
+                .read()
                 .map_err(|_| voting_error!("Lock service read error"))?;
 
             if let Some(existing_lock) = locks.get(&lock_key) {
@@ -269,7 +268,9 @@ impl VotingLockService {
         }
 
         // Acquire write lock to modify locks
-        let mut locks = self.locks.write()
+        let mut locks = self
+            .locks
+            .write()
             .map_err(|_| voting_error!("Lock service write error"))?;
 
         // Double-check pattern for expired locks
@@ -298,11 +299,11 @@ impl VotingLockService {
         locks.insert(lock_key, new_lock.clone());
 
         tracing::info!(
-        "🔒 Voting lock acquired: voter={}, method={:?}, token={}",
-        &voter_hash[..8],
-        new_lock.method,
-        &token_id[..8]
-    );
+            "🔒 Voting lock acquired: voter={}, method={:?}, token={}",
+            &voter_hash[..8],
+            new_lock.method,
+            &token_id[..8]
+        );
 
         if let Some(_expired) = removed_expired {
             Ok(LockResult::ExpiredLockRemoved(new_lock))
@@ -310,7 +311,6 @@ impl VotingLockService {
             Ok(LockResult::Acquired(new_lock))
         }
     }
-
 
     /// Mark voting as completed (with automatic token invalidation)
     ///
@@ -325,7 +325,9 @@ impl VotingLockService {
 
         // Check if already completed (defensive programming)
         {
-            let completions = self.completions.read()
+            let completions = self
+                .completions
+                .read()
                 .map_err(|_| voting_error!("Completion service read error"))?;
 
             if let Some(existing_completion) = completions.get(&completion_key) {
@@ -348,9 +350,13 @@ impl VotingLockService {
 
         // Atomically: add completion record, remove lock, and invalidate token
         {
-            let mut completions = self.completions.write()
+            let mut completions = self
+                .completions
+                .write()
                 .map_err(|_| voting_error!("Completion service write error"))?;
-            let mut locks = self.locks.write()
+            let mut locks = self
+                .locks
+                .write()
                 .map_err(|_| voting_error!("Lock service write error"))?;
 
             // Record completion
@@ -381,7 +387,9 @@ impl VotingLockService {
     /// Release a voting lock without completing the vote (for cancellation)
     /// This also invalidates the associated token
     pub fn release_lock_with_token_cleanup(&self, lock: &VoterLock) -> Result<bool> {
-        let mut locks = self.locks.write()
+        let mut locks = self
+            .locks
+            .write()
             .map_err(|_| voting_error!("Lock service write error"))?;
 
         let lock_key = lock.lock_key();
@@ -409,18 +417,18 @@ impl VotingLockService {
     }
 
     /// Logout - invalidate all tokens for a voter
-    pub fn logout_voter(
-        &self,
-        voter_hash: &str,
-        election_id: &Uuid,
-    ) -> Result<LogoutResult> {
+    pub fn logout_voter(&self, voter_hash: &str, election_id: &Uuid) -> Result<LogoutResult> {
         // Invalidate all tokens for this voter
-        let invalidated_tokens = self.token_service.invalidate_voter_tokens(voter_hash, election_id)?;
+        let invalidated_tokens = self
+            .token_service
+            .invalidate_voter_tokens(voter_hash, election_id)?;
 
         // Release any active locks for this voter
-        let lock_key = format!("voting_lock:{}:{}", voter_hash, election_id);
+        let lock_key = format!("voting_lock:{voter_hash}:{election_id}");
         let released_lock = {
-            let mut locks = self.locks.write()
+            let mut locks = self
+                .locks
+                .write()
                 .map_err(|_| voting_error!("Lock service write error"))?;
             locks.remove(&lock_key)
         };
@@ -440,9 +448,11 @@ impl VotingLockService {
 
     /// Check if a voter currently has an active lock
     pub fn is_locked(&self, voter_hash: &str, election_id: &Uuid) -> Result<Option<VoterLock>> {
-        let lock_key = format!("voting_lock:{}:{}", voter_hash, election_id);
+        let lock_key = format!("voting_lock:{voter_hash}:{election_id}");
 
-        let locks = self.locks.read()
+        let locks = self
+            .locks
+            .read()
             .map_err(|_| voting_error!("Lock service read error"))?;
 
         if let Some(lock) = locks.get(&lock_key) {
@@ -457,24 +467,28 @@ impl VotingLockService {
     }
 
     /// Check if a voter has already completed voting
-    pub fn has_voted(&self, voter_hash: &str, election_id: &Uuid) -> Result<Option<VotingCompletion>> {
-        let completion_key = format!("voting_completion:{}:{}", voter_hash, election_id);
+    pub fn has_voted(
+        &self,
+        voter_hash: &str,
+        election_id: &Uuid,
+    ) -> Result<Option<VotingCompletion>> {
+        let completion_key = format!("voting_completion:{voter_hash}:{election_id}");
 
-        let completions = self.completions.read()
+        let completions = self
+            .completions
+            .read()
             .map_err(|_| voting_error!("Completion service read error"))?;
 
         Ok(completions.get(&completion_key).cloned())
     }
 
     /// Get comprehensive voting status for a voter
-    pub fn get_voting_status(
-        &self,
-        voter_hash: &str,
-        election_id: &Uuid,
-    ) -> Result<VotingStatus> {
+    pub fn get_voting_status(&self, voter_hash: &str, election_id: &Uuid) -> Result<VotingStatus> {
         let active_lock = self.is_locked(voter_hash, election_id)?;
         let completion = self.has_voted(voter_hash, election_id)?;
-        let active_tokens = self.token_service.get_voter_tokens(voter_hash, election_id)?;
+        let active_tokens = self
+            .token_service
+            .get_voter_tokens(voter_hash, election_id)?;
 
         Ok(VotingStatus {
             active_lock,
@@ -485,7 +499,9 @@ impl VotingLockService {
 
     /// Clean up expired locks (completion records are never cleaned up)
     pub fn cleanup_expired_locks(&self) -> Result<u32> {
-        let mut locks = self.locks.write()
+        let mut locks = self
+            .locks
+            .write()
             .map_err(|_| voting_error!("Lock service write error"))?;
 
         let initial_count = locks.len();
@@ -497,7 +513,9 @@ impl VotingLockService {
 
     /// Get all active locks (for debugging/monitoring)
     pub fn get_active_locks(&self) -> Result<Vec<VoterLock>> {
-        let locks = self.locks.read()
+        let locks = self
+            .locks
+            .read()
             .map_err(|_| voting_error!("Lock service read error"))?;
 
         let active_locks: Vec<VoterLock> = locks
@@ -511,7 +529,9 @@ impl VotingLockService {
 
     /// Get all voting completions (for auditing)
     pub fn get_all_completions(&self) -> Result<Vec<VotingCompletion>> {
-        let completions = self.completions.read()
+        let completions = self
+            .completions
+            .read()
             .map_err(|_| voting_error!("Completion service read error"))?;
 
         Ok(completions.values().cloned().collect())
@@ -519,28 +539,36 @@ impl VotingLockService {
 
     /// Get enhanced statistics about the lock service
     pub fn get_stats(&self) -> Result<LockServiceStats> {
-        let locks = self.locks.read()
+        let locks = self
+            .locks
+            .read()
             .map_err(|_| voting_error!("Lock service read error"))?;
-        let completions = self.completions.read()
+        let completions = self
+            .completions
+            .read()
             .map_err(|_| voting_error!("Completion service read error"))?;
 
         let total_locks = locks.len();
         let active_locks = locks.values().filter(|lock| !lock.is_expired()).count();
         let expired_locks = total_locks - active_locks;
 
-        let digital_locks = locks.values()
+        let digital_locks = locks
+            .values()
             .filter(|lock| !lock.is_expired() && lock.method == VotingMethod::Digital)
             .count();
 
-        let analog_locks = locks.values()
+        let analog_locks = locks
+            .values()
             .filter(|lock| !lock.is_expired() && lock.method == VotingMethod::Analog)
             .count();
 
         let total_completions = completions.len();
-        let digital_completions = completions.values()
+        let digital_completions = completions
+            .values()
             .filter(|comp| comp.method == VotingMethod::Digital)
             .count();
-        let analog_completions = completions.values()
+        let analog_completions = completions
+            .values()
             .filter(|comp| comp.method == VotingMethod::Analog)
             .count();
 
@@ -577,12 +605,14 @@ impl VotingLockService {
         let dummy_token_id = format!("test_token_{}", Uuid::new_v4());
 
         // Skip token validation for legacy tests
-        let completion_key = format!("voting_completion:{}:{}", voter_hash, election_id);
-        let lock_key = format!("voting_lock:{}:{}", voter_hash, election_id);
+        let completion_key = format!("voting_completion:{voter_hash}:{election_id}");
+        let lock_key = format!("voting_lock:{voter_hash}:{election_id}");
 
         // Check completion
         {
-            let completions = self.completions.read()
+            let completions = self
+                .completions
+                .read()
                 .map_err(|_| voting_error!("Completion service read error"))?;
 
             if let Some(completion) = completions.get(&completion_key) {
@@ -594,7 +624,9 @@ impl VotingLockService {
         }
 
         // Check locks and acquire
-        let mut locks = self.locks.write()
+        let mut locks = self
+            .locks
+            .write()
             .map_err(|_| voting_error!("Lock service write error"))?;
 
         if let Some(existing_lock) = locks.get(&lock_key) {
@@ -638,9 +670,13 @@ impl VotingLockService {
         let completion_key = completion.completion_key();
 
         {
-            let mut completions = self.completions.write()
+            let mut completions = self
+                .completions
+                .write()
                 .map_err(|_| voting_error!("Completion service write error"))?;
-            let mut locks = self.locks.write()
+            let mut locks = self
+                .locks
+                .write()
                 .map_err(|_| voting_error!("Lock service write error"))?;
 
             completions.insert(completion_key, completion.clone());
@@ -747,12 +783,14 @@ mod tests {
         let election_id = Uuid::new_v4();
 
         // Step 1: Issue token (login)
-        let token_result = token_service.issue_token(
-            &salt_manager,
-            &voter_hash,
-            &election_id,
-            Some("session_123".to_string()),
-        ).unwrap();
+        let token_result = token_service
+            .issue_token(
+                &salt_manager,
+                &voter_hash,
+                &election_id,
+                Some("session_123".to_string()),
+            )
+            .unwrap();
 
         let token = match token_result {
             TokenResult::Issued(token) => token,
@@ -762,13 +800,15 @@ mod tests {
         println!("✅ Token issued: {}", token.token_id);
 
         // Step 2: Acquire voting lock with token
-        let lock_result = lock_service.acquire_lock_with_token(
-            &salt_manager,
-            &token.token_id,
-            &voter_hash,
-            &election_id,
-            VotingMethod::Digital,
-        ).unwrap();
+        let lock_result = lock_service
+            .acquire_lock_with_token(
+                &salt_manager,
+                &token.token_id,
+                &voter_hash,
+                &election_id,
+                VotingMethod::Digital,
+            )
+            .unwrap();
 
         let voting_lock = match lock_result {
             LockResult::Acquired(lock) => lock,
@@ -779,45 +819,48 @@ mod tests {
 
         // Step 3: Complete voting
         let vote_id = Uuid::new_v4();
-        let completion = lock_service.complete_voting_with_token_cleanup(&voting_lock, Some(vote_id)).unwrap();
+        let completion = lock_service
+            .complete_voting_with_token_cleanup(&voting_lock, Some(vote_id))
+            .unwrap();
 
         println!("✅ Voting completed: {}", completion.completion_id);
 
         // Step 4: Verify token is invalidated
-        let token_validation = token_service.validate_token(
-            &salt_manager,
-            &token.token_id,
-            &voter_hash,
-            &election_id,
-        ).unwrap();
+        let token_validation = token_service
+            .validate_token(&salt_manager, &token.token_id, &voter_hash, &election_id)
+            .unwrap();
 
         match token_validation {
             TokenResult::Invalid { reason } => {
-                println!("✅ Token correctly invalidated after voting: {}", reason);
+                println!("✅ Token correctly invalidated after voting: {reason}");
             }
             _ => panic!("Expected token to be invalidated after voting"),
         }
 
         // Step 5: Try to vote again (should fail due to completion)
-        let new_token_result = token_service.issue_token(
-            &salt_manager,
-            &voter_hash,
-            &election_id,
-            Some("session_456".to_string()),
-        ).unwrap();
+        let new_token_result = token_service
+            .issue_token(
+                &salt_manager,
+                &voter_hash,
+                &election_id,
+                Some("session_456".to_string()),
+            )
+            .unwrap();
 
         let new_token = match new_token_result {
             TokenResult::Issued(token) => token,
             _ => panic!("Should be able to issue new token"),
         };
 
-        let second_lock_result = lock_service.acquire_lock_with_token(
-            &salt_manager,
-            &new_token.token_id,
-            &voter_hash,
-            &election_id,
-            VotingMethod::Analog,
-        ).unwrap();
+        let second_lock_result = lock_service
+            .acquire_lock_with_token(
+                &salt_manager,
+                &new_token.token_id,
+                &voter_hash,
+                &election_id,
+                VotingMethod::Analog,
+            )
+            .unwrap();
 
         match second_lock_result {
             LockResult::AlreadyVoted { .. } => {
@@ -837,18 +880,20 @@ mod tests {
         let election_id = Uuid::new_v4();
 
         // Try to acquire lock with invalid token
-        let lock_result = lock_service.acquire_lock_with_token(
-            &salt_manager,
-            "invalid_token_123",
-            &voter_hash,
-            &election_id,
-            VotingMethod::Digital,
-        ).unwrap();
+        let lock_result = lock_service
+            .acquire_lock_with_token(
+                &salt_manager,
+                "invalid_token_123",
+                &voter_hash,
+                &election_id,
+                VotingMethod::Digital,
+            )
+            .unwrap();
 
         match lock_result {
             LockResult::InvalidToken { reason } => {
                 assert!(reason.contains("not found"));
-                println!("✅ Invalid token correctly blocked: {}", reason);
+                println!("✅ Invalid token correctly blocked: {reason}");
             }
             _ => panic!("Expected invalid token to be blocked"),
         }
@@ -864,25 +909,29 @@ mod tests {
         let election_id = Uuid::new_v4();
 
         // Issue token and acquire lock
-        let token_result = token_service.issue_token(
-            &salt_manager,
-            &voter_hash,
-            &election_id,
-            Some("session_123".to_string()),
-        ).unwrap();
+        let token_result = token_service
+            .issue_token(
+                &salt_manager,
+                &voter_hash,
+                &election_id,
+                Some("session_123".to_string()),
+            )
+            .unwrap();
 
         let token = match token_result {
             TokenResult::Issued(token) => token,
             _ => panic!("Expected token to be issued"),
         };
 
-        let lock_result = lock_service.acquire_lock_with_token(
-            &salt_manager,
-            &token.token_id,
-            &voter_hash,
-            &election_id,
-            VotingMethod::Digital,
-        ).unwrap();
+        let lock_result = lock_service
+            .acquire_lock_with_token(
+                &salt_manager,
+                &token.token_id,
+                &voter_hash,
+                &election_id,
+                VotingMethod::Digital,
+            )
+            .unwrap();
 
         let _voting_lock = match lock_result {
             LockResult::Acquired(lock) => lock,
@@ -890,20 +939,21 @@ mod tests {
         };
 
         // Logout voter
-        let logout_result = lock_service.logout_voter(&voter_hash, &election_id).unwrap();
+        let logout_result = lock_service
+            .logout_voter(&voter_hash, &election_id)
+            .unwrap();
         assert!(logout_result.invalidated_tokens > 0);
         assert!(logout_result.released_lock);
 
-        println!("✅ Voter logout invalidated {} tokens and released lock",
-                 logout_result.invalidated_tokens);
+        println!(
+            "✅ Voter logout invalidated {} tokens and released lock",
+            logout_result.invalidated_tokens
+        );
 
         // Try to use token after logout (should fail)
-        let validation_result = token_service.validate_token(
-            &salt_manager,
-            &token.token_id,
-            &voter_hash,
-            &election_id,
-        ).unwrap();
+        let validation_result = token_service
+            .validate_token(&salt_manager, &token.token_id, &voter_hash, &election_id)
+            .unwrap();
 
         match validation_result {
             TokenResult::Invalid { .. } => {
@@ -923,20 +973,26 @@ mod tests {
         let election_id = Uuid::new_v4();
 
         // Initial status - no tokens
-        let initial_status = lock_service.get_voting_status(&voter_hash, &election_id).unwrap();
+        let initial_status = lock_service
+            .get_voting_status(&voter_hash, &election_id)
+            .unwrap();
         assert!(!initial_status.can_vote());
-        assert!(initial_status.blocking_reason().unwrap().contains("No valid voting tokens"));
+        assert!(
+            initial_status
+                .blocking_reason()
+                .unwrap()
+                .contains("No valid voting tokens")
+        );
 
         // Issue token
-        let _token_result = token_service.issue_token(
-            &salt_manager,
-            &voter_hash,
-            &election_id,
-            None,
-        ).unwrap();
+        let _token_result = token_service
+            .issue_token(&salt_manager, &voter_hash, &election_id, None)
+            .unwrap();
 
         // Status with token
-        let status_with_token = lock_service.get_voting_status(&voter_hash, &election_id).unwrap();
+        let status_with_token = lock_service
+            .get_voting_status(&voter_hash, &election_id)
+            .unwrap();
         assert!(status_with_token.can_vote());
         assert!(status_with_token.blocking_reason().is_none());
         assert_eq!(status_with_token.active_tokens.len(), 1);
