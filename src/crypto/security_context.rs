@@ -25,7 +25,7 @@ use crate::crypto::{
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, RwLock, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 /// Maximum security events to keep in memory

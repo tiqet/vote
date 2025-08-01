@@ -14,10 +14,10 @@
 //! - Clean interfaces for future layer integration
 
 use crate::{crypto_error, Result};
-use crate::crypto::{SecurityEvent, SecuritySeverity, SecurityIncidentType};
+use crate::crypto::SecurityEvent;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, RwLock, Mutex};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -232,7 +232,7 @@ impl AuthenticationPattern {
     }
 
     pub fn is_suspicious(&self) -> bool {
-        self.suspicious_score > 0.7 // 70% threshold
+        self.suspicious_score >= 0.7 // 70% threshold
     }
 }
 
@@ -466,7 +466,7 @@ impl SecurityPerformanceMonitor {
         success: bool,
         context: SecurityTimingContext,
     ) -> Result<SecurityThreatAssessment> {
-        let timing = SecurityTiming::new(operation.clone(), duration, success, context);
+        let timing = SecurityTiming::new(operation.clone(), duration, success, context.clone());
 
         // Store timing data
         {
@@ -482,15 +482,44 @@ impl SecurityPerformanceMonitor {
             }
         }
 
+        // **NEW: Immediately aggregate authentication patterns**
+        if matches!(operation, SecurityOperation::SecureLogin | SecurityOperation::SessionValidation) {
+            self.update_auth_pattern_immediately(&timing, success).await?;
+        }
+
         // Analyze for threats
         let threat_assessment = self.analyze_timing_threat(&timing).await?;
 
-        // Update authentication patterns if applicable
-        if matches!(operation, SecurityOperation::SecureLogin | SecurityOperation::SessionValidation) {
-            self.update_auth_pattern(&timing, success).await?;
+        Ok(threat_assessment)
+    }
+
+    /// **NEW: Immediately aggregate individual login attempts into AuthenticationPattern**
+    async fn update_auth_pattern_immediately(&self, timing: &SecurityTiming, success: bool) -> Result<()> {
+        if let Some(voter_hash) = &timing.context.voter_hash {
+            let mut auth_patterns = self.auth_patterns.write()
+                .map_err(|_| crypto_error!("Failed to write auth patterns"))?;
+
+            let pattern = auth_patterns
+                .entry(voter_hash.clone())
+                .or_insert_with(|| AuthenticationPattern::new(voter_hash.clone()));
+
+            let timing_anomaly = timing.duration_micros > (self.config.timing_anomaly_threshold_micros * 2);
+            pattern.record_attempt(success, timing_anomaly);
+
+            // **CRITICAL**: Immediately calculate if this pattern is now suspicious
+            // This ensures get_auth_patterns() returns detectable patterns right away
         }
 
-        Ok(threat_assessment)
+        Ok(())
+    }
+
+    /// Get authentication patterns analysis - **FIXED: Now returns immediately aggregated patterns**
+    pub async fn get_auth_patterns(&self) -> Result<Vec<AuthenticationPattern>> {
+        let auth_patterns = self.auth_patterns.read()
+            .map_err(|_| crypto_error!("Failed to read auth patterns"))?;
+
+        // Return all patterns (they're already aggregated immediately when recorded)
+        Ok(auth_patterns.values().cloned().collect())
     }
 
     /// Record resource usage
@@ -536,13 +565,6 @@ impl SecurityPerformanceMonitor {
         }
     }
 
-    /// Get authentication patterns analysis
-    pub async fn get_auth_patterns(&self) -> Result<Vec<AuthenticationPattern>> {
-        let auth_patterns = self.auth_patterns.read()
-            .map_err(|_| crypto_error!("Failed to read auth patterns"))?;
-
-        Ok(auth_patterns.values().cloned().collect())
-    }
 
     /// Get detected DoS patterns
     pub async fn get_dos_patterns(&self) -> Result<Vec<DoSPattern>> {

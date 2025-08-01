@@ -7,6 +7,7 @@ pub mod key_rotation;
 pub mod security_context;
 pub mod audit;
 pub mod security_monitoring;
+pub mod incident_management;
 
 use crate::{Result, crypto_error};
 use rand::RngCore;
@@ -49,6 +50,15 @@ pub use security_monitoring::{
     DoSPattern, SecurityThreatAssessment, ThreatLevel, ThreatType,
     SecurityMonitoringConfig, LayerSecurityIntegration, LayerType,
     SecurityTimingContext, ResourceUsage
+};
+
+// Re-export automatic security incident management
+pub use incident_management::{
+    SecurityIncidentManager, SecurityIncident, IncidentType, IncidentSeverity, IncidentStatus,
+    AffectedEntity, IncidentEvidence, EvidenceType, IncidentCorrelation, ComplianceMetadata,
+    AutomatedResponse, ResponseType, ResponseResult, AlertLevel, TokenInvalidationScope,
+    PatternCorrelator, DetectedPattern, PatternType, EscalationEngine, ResponseOrchestrator,
+    IncidentAnalysisReport, IncidentStatistics, IncidentManagementConfig
 };
 
 /// Secure random token generator
