@@ -19,6 +19,7 @@ use crate::crypto::{
     key_rotation::KeyRotationManager, CryptoRateLimiter,
     voting_lock::{VotingMethod, LockResult},
     voting_token::{TokenResult, VotingToken},
+    audit::{EnhancedAuditSystem, AuditConfig, ComplianceLevel, AuditQuery},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -219,9 +220,11 @@ pub struct SecurityContext {
     key_manager: Option<Arc<KeyRotationManager>>,
     rate_limiter: Arc<Mutex<CryptoRateLimiter>>,
 
+    // Enhanced audit system
+    audit_system: Arc<EnhancedAuditSystem>,
+
     // Security state
     active_sessions: Arc<RwLock<HashMap<String, SecuritySession>>>,
-    security_events: Arc<RwLock<VecDeque<SecurityEvent>>>,
     failed_attempts: Arc<RwLock<HashMap<String, VecDeque<FailedAttempt>>>>,
     security_metrics: Arc<RwLock<SecurityMetrics>>,
 
@@ -295,14 +298,23 @@ impl SecurityContext {
             system_security_score: 1.0,
         };
 
+        // Initialize enhanced audit system
+        let audit_config = AuditConfig {
+            audit_source: "voting_security_context".to_string(),
+            enable_streaming: config.security_logging_enabled,
+            default_compliance_level: ComplianceLevel::High, // Default to high for voting systems
+            ..AuditConfig::default()
+        };
+        let audit_system = Arc::new(EnhancedAuditSystem::new(audit_config));
+
         Self {
             salt_manager,
             token_service,
             lock_service,
             key_manager,
             rate_limiter,
+            audit_system,
             active_sessions: Arc::new(RwLock::new(HashMap::new())),
-            security_events: Arc::new(RwLock::new(VecDeque::new())),
             failed_attempts: Arc::new(RwLock::new(HashMap::new())),
             security_metrics: Arc::new(RwLock::new(initial_metrics)),
             config,
@@ -753,16 +765,33 @@ impl SecurityContext {
             return;
         }
 
-        {
-            let mut events = self.security_events.write().unwrap();
-            events.push_back(event.clone());
+        // Determine compliance level based on event type
+        let compliance_level = match &event {
+            SecurityEvent::SecurityIncident { severity, .. } => match severity {
+                SecuritySeverity::Critical => ComplianceLevel::Critical,
+                SecuritySeverity::High => ComplianceLevel::High,
+                _ => ComplianceLevel::Standard,
+            },
+            SecurityEvent::VotingCompleted { .. } => ComplianceLevel::Critical,
+            SecurityEvent::KeyRotation { .. } => ComplianceLevel::High,
+            SecurityEvent::LoginAttempt { success: false, .. } => ComplianceLevel::High,
+            SecurityEvent::VotingBlocked { .. } => ComplianceLevel::High,
+            _ => ComplianceLevel::Standard,
+        };
 
-            if events.len() > MAX_SECURITY_EVENTS {
-                events.pop_front();
-            }
+        // Generate correlation ID for related events
+        let correlation_id = self.generate_correlation_id(&event);
+
+        // Log to enhanced audit system
+        if let Err(e) = self.audit_system.log_security_event(
+            event.clone(),
+            Some(compliance_level),
+            correlation_id,
+        ).await {
+            tracing::error!("Failed to log security event to audit system: {}", e);
         }
 
-        // Log to tracing system
+        // Log to tracing system for immediate visibility
         match event {
             SecurityEvent::SecurityIncident { incident_type, severity, .. } => {
                 tracing::warn!("🚨 Security incident: {:?} (severity: {:?})", incident_type, severity);
@@ -917,13 +946,29 @@ impl SecurityContext {
     }
 
     async fn get_recent_security_events(&self, voter_hash: &str, limit: usize) -> Vec<SecurityEvent> {
-        let events = self.security_events.read().unwrap();
-        events.iter()
-            .rev()
-            .filter(|event| self.event_involves_voter(event, voter_hash))
-            .take(limit)
-            .cloned()
-            .collect()
+        // Query audit system for recent events related to this voter
+        let query = AuditQuery {
+            limit: Some(limit),
+            ..Default::default()
+        };
+
+        match self.audit_system.query_audit_records(query).await {
+            Ok(audit_records) => {
+                audit_records
+                    .into_iter()
+                    .filter(|record| self.audit_record_involves_voter(record, voter_hash))
+                    .map(|record| record.security_event)
+                    .collect()
+            }
+            Err(e) => {
+                tracing::error!("Failed to query audit records: {}", e);
+                Vec::new()
+            }
+        }
+    }
+
+    fn audit_record_involves_voter(&self, record: &crate::crypto::audit::AuditRecord, voter_hash: &str) -> bool {
+        self.event_involves_voter(&record.security_event, voter_hash)
     }
 
     fn event_involves_voter(&self, event: &SecurityEvent, voter_hash: &str) -> bool {
@@ -975,6 +1020,24 @@ impl SecurityContext {
         score.max(0.0)
     }
 
+    fn generate_correlation_id(&self, event: &SecurityEvent) -> Option<String> {
+        match event {
+            SecurityEvent::LoginAttempt { voter_hash, election_id, .. } => {
+                Some(format!("login_{}_{}", &voter_hash[..8], election_id))
+            }
+            SecurityEvent::VotingLockAcquired { voter_hash, election_id, .. } => {
+                Some(format!("voting_{}_{}", &voter_hash[..8], election_id))
+            }
+            SecurityEvent::VotingCompleted { voter_hash, election_id, .. } => {
+                Some(format!("completion_{}_{}", &voter_hash[..8], election_id))
+            }
+            SecurityEvent::SecurityIncident { incident_id, .. } => {
+                Some(format!("incident_{}", incident_id))
+            }
+            _ => None,
+        }
+    }
+
     async fn update_auth_metrics(&self, start_time: SystemTime, success: bool) {
         let duration = start_time.elapsed().unwrap_or_default();
 
@@ -1007,6 +1070,36 @@ impl SecurityContext {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs()
+    }
+
+    /// Get access to the enhanced audit system
+    pub fn audit_system(&self) -> &Arc<EnhancedAuditSystem> {
+        &self.audit_system
+    }
+
+    /// Query audit records with criteria
+    pub async fn query_audit_records(&self, query: AuditQuery) -> Result<Vec<crate::crypto::audit::AuditRecord>> {
+        self.audit_system.query_audit_records(query).await
+    }
+
+    /// Export compliance report
+    pub async fn export_compliance_report(&self, query: AuditQuery) -> Result<crate::crypto::audit::ComplianceReport> {
+        self.audit_system.export_compliance_report(query).await
+    }
+
+    /// Verify audit trail integrity
+    pub async fn verify_audit_integrity(&self) -> Result<crate::crypto::audit::AuditIntegrityReport> {
+        self.audit_system.verify_integrity().await
+    }
+
+    /// Get audit trail statistics
+    pub async fn get_audit_statistics(&self) -> Result<crate::crypto::audit::AuditTrailStatistics> {
+        self.audit_system.get_statistics().await
+    }
+
+    /// Clean up expired audit records
+    pub async fn cleanup_expired_audit_records(&self) -> Result<crate::crypto::audit::AuditCleanupReport> {
+        self.audit_system.cleanup_expired().await
     }
 }
 
@@ -1208,5 +1301,14 @@ mod tests {
         println!("   Completion: {}", completion.completion_id);
         println!("   Tokens invalidated: {}", logout_result.invalidated_tokens);
         println!("   Security score: {:.2}", final_metrics.system_security_score);
+
+        // Verify audit trail
+        let audit_integrity = security_context.verify_audit_integrity().await.unwrap();
+        assert!(audit_integrity.hash_chain_valid);
+        println!("   Audit integrity: ✅ Verified");
+
+        let audit_stats = security_context.get_audit_statistics().await.unwrap();
+        println!("   Audit records: {}", audit_stats.total_records);
+        assert!(audit_stats.total_records > 0);
     }
 }
