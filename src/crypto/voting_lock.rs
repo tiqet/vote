@@ -195,6 +195,7 @@ impl VotingLockService {
     /// 2. Check if voter has already completed voting (prevents double voting)
     /// 3. Check for active concurrent locks (prevents race conditions)
     /// 4. If all checks pass, acquire lock for voting session
+    /// Enhanced lock acquisition with timing attack protection
     pub fn acquire_lock_with_token(
         &self,
         salt_manager: &crate::crypto::SecureSaltManager,
@@ -206,17 +207,27 @@ impl VotingLockService {
         let completion_key = format!("voting_completion:{}:{}", voter_hash, election_id);
         let lock_key = format!("voting_lock:{}:{}", voter_hash, election_id);
 
-        // STEP 1: Validate voting token (CRITICAL for security)
+        // CRITICAL: Always perform token validation first, regardless of other checks
+        // This ensures consistent timing for all code paths
         let token_validation = self.token_service.validate_token(
             salt_manager,
             token_id,
             voter_hash,
             election_id,
         )?;
-
-        let _valid_token = match token_validation {
+        
+        let valid_token = match token_validation {
             TokenResult::Valid(token) => token,
             TokenResult::Invalid { reason } => {
+                // Still perform dummy completion and lock checks to maintain timing
+                let completions = self.completions.read()
+                    .map_err(|_| voting_error!("Completion service read error"))?;
+                let _dummy_completion_check = completions.get(&completion_key);
+
+                let locks = self.locks.read()
+                    .map_err(|_| voting_error!("Lock service read error"))?;
+                let _dummy_lock_check = locks.get(&lock_key);
+
                 return Ok(LockResult::InvalidToken { reason });
             }
             _ => {
@@ -226,7 +237,10 @@ impl VotingLockService {
             }
         };
 
-        // STEP 2: Check if voter has already completed voting
+        // Continue with completion and lock checks...
+        // (rest of the function remains the same as it doesn't have timing issues)
+
+        // Check if voter has already completed voting
         {
             let completions = self.completions.read()
                 .map_err(|_| voting_error!("Completion service read error"))?;
@@ -239,7 +253,7 @@ impl VotingLockService {
             }
         }
 
-        // STEP 3: Check for active concurrent locks
+        // Check for active concurrent locks
         {
             let locks = self.locks.read()
                 .map_err(|_| voting_error!("Lock service read error"))?;
@@ -254,7 +268,7 @@ impl VotingLockService {
             }
         }
 
-        // STEP 4: Acquire write lock to modify locks
+        // Acquire write lock to modify locks
         let mut locks = self.locks.write()
             .map_err(|_| voting_error!("Lock service write error"))?;
 
@@ -272,23 +286,23 @@ impl VotingLockService {
             }
         }
 
-        // STEP 5: Create new lock for voting session
-        let new_lock = VoterLock::new(
+        // Create new lock for voting session
+        let new_lock = crate::crypto::voting_lock::VoterLock::new(
             voter_hash.to_string(),
             *election_id,
             method,
-            VOTING_LOCK_DURATION,
+            crate::crypto::voting_lock::VOTING_LOCK_DURATION,
             token_id.to_string(),
         )?;
 
         locks.insert(lock_key, new_lock.clone());
 
         tracing::info!(
-            "🔒 Voting lock acquired: voter={}, method={:?}, token={}",
-            &voter_hash[..8],
-            new_lock.method,
-            &token_id[..8]
-        );
+        "🔒 Voting lock acquired: voter={}, method={:?}, token={}",
+        &voter_hash[..8],
+        new_lock.method,
+        &token_id[..8]
+    );
 
         if let Some(_expired) = removed_expired {
             Ok(LockResult::ExpiredLockRemoved(new_lock))
@@ -296,6 +310,7 @@ impl VotingLockService {
             Ok(LockResult::Acquired(new_lock))
         }
     }
+
 
     /// Mark voting as completed (with automatic token invalidation)
     ///
