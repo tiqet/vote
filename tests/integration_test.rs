@@ -697,7 +697,7 @@ async fn test_key_rotation_with_token_security() -> Result<()> {
     let token_service = Arc::new(VotingTokenService::for_testing());
     let lock_service = VotingLockService::new(token_service.clone());
 
-    let rotation_config = config.security.key_rotation_config();
+    let rotation_config = config.security.key_rotation_config()?;
     let key_manager = KeyRotationManager::new(rotation_config).await?;
 
     let election_id = Uuid::new_v4();
