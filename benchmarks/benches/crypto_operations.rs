@@ -1,12 +1,11 @@
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
-use vote::crypto::{SecureSaltManager, SecureKeyPair, SecureMemory, CryptoRateLimiter};
+use vote::crypto::{CryptoRateLimiter, SecureKeyPair, SecureMemory, SecureSaltManager};
 
 /// Banking-grade crypto operation benchmarks
 /// Critical for timing attack resistance validation
-
 fn bench_voter_hash_generation(c: &mut Criterion) {
     let salt_manager = SecureSaltManager::for_testing();
     let bank_id = "test_bank";
@@ -24,12 +23,14 @@ fn bench_voter_hash_generation(c: &mut Criterion) {
                 .unwrap()
                 .as_secs();
 
-            salt_manager.hash_voter_identity_secure(
-                black_box(bank_id),
-                black_box(&election_id),
-                black_box(current_timestamp),
-                black_box(300)
-            ).unwrap()
+            salt_manager
+                .hash_voter_identity_secure(
+                    black_box(bank_id),
+                    black_box(&election_id),
+                    black_box(current_timestamp),
+                    black_box(300),
+                )
+                .unwrap()
         })
     });
 
@@ -46,14 +47,16 @@ fn bench_voter_hash_generation(c: &mut Criterion) {
                         .unwrap()
                         .as_secs();
 
-                    salt_manager.hash_voter_identity_secure(
-                        black_box(&long_bank_id),
-                        black_box(&election_id),
-                        black_box(current_timestamp),
-                        black_box(300)
-                    ).unwrap()
+                    salt_manager
+                        .hash_voter_identity_secure(
+                            black_box(&long_bank_id),
+                            black_box(&election_id),
+                            black_box(current_timestamp),
+                            black_box(300),
+                        )
+                        .unwrap()
                 })
-            }
+            },
         );
     }
 
@@ -66,9 +69,7 @@ fn bench_key_operations(c: &mut Criterion) {
 
     // Key generation
     group.bench_function("key_generation", |b| {
-        b.iter(|| {
-            SecureKeyPair::generate_with_expiration(black_box(Some(86400))).unwrap()
-        })
+        b.iter(|| SecureKeyPair::generate_with_expiration(black_box(Some(86400))).unwrap())
     });
 
     // Signature operations
@@ -76,21 +77,21 @@ fn bench_key_operations(c: &mut Criterion) {
     let message = b"test voting message for signature";
 
     group.bench_function("signature_creation", |b| {
-        b.iter(|| {
-            key_pair.sign_with_timestamp(black_box(message)).unwrap()
-        })
+        b.iter(|| key_pair.sign_with_timestamp(black_box(message)).unwrap())
     });
 
     let (signature, timestamp) = key_pair.sign_with_timestamp(message).unwrap();
 
     group.bench_function("signature_verification", |b| {
         b.iter(|| {
-            key_pair.verify_with_timestamp(
-                black_box(message),
-                black_box(&signature),
-                black_box(timestamp),
-                black_box(300)
-            ).unwrap()
+            key_pair
+                .verify_with_timestamp(
+                    black_box(message),
+                    black_box(&signature),
+                    black_box(timestamp),
+                    black_box(300),
+                )
+                .unwrap()
         })
     });
 
@@ -106,28 +107,20 @@ fn bench_memory_operations(c: &mut Criterion) {
     let data3 = data1; // Same data for positive comparison
 
     group.bench_function("constant_time_eq_different", |b| {
-        b.iter(|| {
-            SecureMemory::constant_time_eq(black_box(&data1), black_box(&data2))
-        })
+        b.iter(|| SecureMemory::constant_time_eq(black_box(&data1), black_box(&data2)))
     });
 
     group.bench_function("constant_time_eq_same", |b| {
-        b.iter(|| {
-            SecureMemory::constant_time_eq(black_box(&data1), black_box(&data3))
-        })
+        b.iter(|| SecureMemory::constant_time_eq(black_box(&data1), black_box(&data3)))
     });
 
     // Random generation performance
     group.bench_function("secure_random_32", |b| {
-        b.iter(|| {
-            SecureMemory::secure_random_bytes::<32>()
-        })
+        b.iter(|| SecureMemory::secure_random_bytes::<32>())
     });
 
     group.bench_function("secure_random_64", |b| {
-        b.iter(|| {
-            SecureMemory::secure_random_bytes::<64>()
-        })
+        b.iter(|| SecureMemory::secure_random_bytes::<64>())
     });
 
     group.finish();
@@ -143,29 +136,23 @@ fn bench_rate_limiting(c: &mut Criterion) {
                 // Create fresh rate limiter for each iteration to avoid hitting limits
                 CryptoRateLimiter::new(10000) // Very high limit for benchmarking
             },
-            |mut rate_limiter| {
-                rate_limiter.check_rate_limit().unwrap()
-            },
-            criterion::BatchSize::SmallInput
+            |mut rate_limiter| rate_limiter.check_rate_limit().unwrap(),
+            criterion::BatchSize::SmallInput,
         );
     });
 
     // Rate limiter with different limits - test performance, not actual limiting
     for limit in [10, 100, 1000, 10000].iter() {
-        group.bench_with_input(
-            BenchmarkId::new("rate_limit", limit),
-            limit,
-            |b, &limit| {
-                b.iter_batched(
-                    || CryptoRateLimiter::new(limit),
-                    |mut rate_limiter| {
-                        // Only do one check per rate limiter to avoid hitting limits
-                        rate_limiter.check_rate_limit().unwrap_or(())
-                    },
-                    criterion::BatchSize::SmallInput
-                );
-            }
-        );
+        group.bench_with_input(BenchmarkId::new("rate_limit", limit), limit, |b, &limit| {
+            b.iter_batched(
+                || CryptoRateLimiter::new(limit),
+                |mut rate_limiter| {
+                    // Only do one check per rate limiter to avoid hitting limits
+                    rate_limiter.check_rate_limit().unwrap_or(())
+                },
+                criterion::BatchSize::SmallInput,
+            );
+        });
     }
 
     group.finish();
@@ -191,19 +178,21 @@ fn bench_timing_attack_resistance(c: &mut Criterion) {
     ];
 
     for (i, voter) in voters.iter().enumerate() {
-        group.bench_function(&format!("voter_hash_{}", i), |b| {
+        group.bench_function(format!("voter_hash_{i}"), |b| {
             b.iter(|| {
                 let current_timestamp = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_secs();
 
-                salt_manager.hash_voter_identity_secure(
-                    black_box(voter),
-                    black_box(&Uuid::new_v4()),
-                    black_box(current_timestamp),
-                    black_box(300)
-                ).unwrap()
+                salt_manager
+                    .hash_voter_identity_secure(
+                        black_box(voter),
+                        black_box(&Uuid::new_v4()),
+                        black_box(current_timestamp),
+                        black_box(300),
+                    )
+                    .unwrap()
             })
         });
     }
@@ -233,11 +222,12 @@ fn bench_concurrent_operations(c: &mut Criterion) {
                         .as_secs();
 
                     sm.hash_voter_identity_secure(
-                        &format!("voter_{}", i),
+                        &format!("voter_{i}"),
                         &eid,
                         current_timestamp,
-                        300
-                    ).unwrap()
+                        300,
+                    )
+                    .unwrap()
                 }));
             }
 

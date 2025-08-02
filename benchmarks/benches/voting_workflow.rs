@@ -1,18 +1,17 @@
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use rand::RngCore;
 use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
-use rand::RngCore;
 use vote::crypto::{
-    SecureSaltManager, VotingTokenService, VotingLockService,
-    SecurityContext, voting_token::TokenResult,
-    voting_lock::{LockResult, VotingMethod}
+    SecureSaltManager, SecurityContext, VotingLockService, VotingTokenService,
+    voting_lock::{LockResult, VotingMethod},
+    voting_token::TokenResult,
 };
 
 /// End-to-end voting workflow benchmarks
 /// Performance validation for complete banking-grade voting process
-
 fn bench_token_lifecycle(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -27,12 +26,14 @@ fn bench_token_lifecycle(c: &mut Criterion) {
     // Token issuance performance
     group.bench_function("token_issuance", |b| {
         b.to_async(&rt).iter(|| async {
-            let result = token_service.issue_token(
-                black_box(&salt_manager),
-                black_box(&voter_hash),
-                black_box(&election_id),
-                black_box(Some("session_123".to_string()))
-            ).unwrap();
+            let result = token_service
+                .issue_token(
+                    black_box(&salt_manager),
+                    black_box(&voter_hash),
+                    black_box(&election_id),
+                    black_box(Some("session_123".to_string())),
+                )
+                .unwrap();
 
             if let TokenResult::Issued(token) = result {
                 black_box(token);
@@ -51,12 +52,14 @@ fn bench_token_lifecycle(c: &mut Criterion) {
                 let unique_voter_hash = hex::encode(voter_bytes);
                 let unique_election_id = Uuid::new_v4();
 
-                let token_result = token_service.issue_token(
-                    &salt_manager,
-                    &unique_voter_hash,
-                    &unique_election_id,
-                    Some(format!("session_{}", Uuid::new_v4()))
-                ).unwrap();
+                let token_result = token_service
+                    .issue_token(
+                        &salt_manager,
+                        &unique_voter_hash,
+                        &unique_election_id,
+                        Some(format!("session_{}", Uuid::new_v4())),
+                    )
+                    .unwrap();
 
                 if let TokenResult::Issued(token) = token_result {
                     (token.token_id, unique_voter_hash, unique_election_id)
@@ -65,14 +68,16 @@ fn bench_token_lifecycle(c: &mut Criterion) {
                 }
             },
             |(token_id, voter_hash, election_id)| {
-                token_service.validate_token(
-                    black_box(&salt_manager),
-                    black_box(&token_id),
-                    black_box(&voter_hash),
-                    black_box(&election_id)
-                ).unwrap()
+                token_service
+                    .validate_token(
+                        black_box(&salt_manager),
+                        black_box(&token_id),
+                        black_box(&voter_hash),
+                        black_box(&election_id),
+                    )
+                    .unwrap()
             },
-            criterion::BatchSize::SmallInput
+            criterion::BatchSize::SmallInput,
         );
     });
 
@@ -96,9 +101,9 @@ fn bench_voting_lock_operations(c: &mut Criterion) {
                 rng.fill_bytes(&mut voter_bytes);
                 let voter_hash = hex::encode(voter_bytes);
                 let election_id = Uuid::new_v4();
-                let token_result = token_service.issue_token(
-                    &salt_manager, &voter_hash, &election_id, None
-                ).unwrap();
+                let token_result = token_service
+                    .issue_token(&salt_manager, &voter_hash, &election_id, None)
+                    .unwrap();
 
                 let token_id = if let TokenResult::Issued(token) = token_result {
                     token.token_id
@@ -109,15 +114,17 @@ fn bench_voting_lock_operations(c: &mut Criterion) {
                 (voter_hash, election_id, token_id)
             },
             |(voter_hash, election_id, token_id)| {
-                lock_service.acquire_lock_with_token(
-                    black_box(&salt_manager),
-                    black_box(&token_id),
-                    black_box(&voter_hash),
-                    black_box(&election_id),
-                    black_box(VotingMethod::Digital)
-                ).unwrap()
+                lock_service
+                    .acquire_lock_with_token(
+                        black_box(&salt_manager),
+                        black_box(&token_id),
+                        black_box(&voter_hash),
+                        black_box(&election_id),
+                        black_box(VotingMethod::Digital),
+                    )
+                    .unwrap()
             },
-            criterion::BatchSize::SmallInput
+            criterion::BatchSize::SmallInput,
         );
     });
 
@@ -131,9 +138,9 @@ fn bench_voting_lock_operations(c: &mut Criterion) {
                 rng.fill_bytes(&mut voter_bytes);
                 let voter_hash = hex::encode(voter_bytes);
                 let election_id = Uuid::new_v4();
-                let token_result = token_service.issue_token(
-                    &salt_manager, &voter_hash, &election_id, None
-                ).unwrap();
+                let token_result = token_service
+                    .issue_token(&salt_manager, &voter_hash, &election_id, None)
+                    .unwrap();
 
                 let token_id = if let TokenResult::Issued(token) = token_result {
                     token.token_id
@@ -141,9 +148,15 @@ fn bench_voting_lock_operations(c: &mut Criterion) {
                     panic!("Token issuance failed");
                 };
 
-                let lock_result = lock_service.acquire_lock_with_token(
-                    &salt_manager, &token_id, &voter_hash, &election_id, VotingMethod::Digital
-                ).unwrap();
+                let lock_result = lock_service
+                    .acquire_lock_with_token(
+                        &salt_manager,
+                        &token_id,
+                        &voter_hash,
+                        &election_id,
+                        VotingMethod::Digital,
+                    )
+                    .unwrap();
 
                 if let LockResult::Acquired(lock) = lock_result {
                     lock
@@ -152,9 +165,11 @@ fn bench_voting_lock_operations(c: &mut Criterion) {
                 }
             },
             |lock| {
-                lock_service.release_lock_with_token_cleanup(black_box(&lock)).unwrap()
+                lock_service
+                    .release_lock_with_token_cleanup(black_box(&lock))
+                    .unwrap()
             },
-            criterion::BatchSize::SmallInput
+            criterion::BatchSize::SmallInput,
         );
     });
 
@@ -177,7 +192,9 @@ fn bench_complete_voting_workflow(c: &mut Criterion) {
                 let token_service = Arc::new(VotingTokenService::for_testing());
                 let lock_service = Arc::new(VotingLockService::new(token_service.clone()));
                 let security_context = SecurityContext::for_testing(
-                    salt_manager.clone(), token_service.clone(), lock_service.clone()
+                    salt_manager.clone(),
+                    token_service.clone(),
+                    lock_service.clone(),
                 );
 
                 let mut rng = rand::thread_rng();
@@ -190,12 +207,15 @@ fn bench_complete_voting_workflow(c: &mut Criterion) {
             },
             |(security_context, bank_id, election_id)| async move {
                 // Step 1: Secure login (this handles token issuance internally)
-                let login_result = security_context.secure_login(
-                    black_box(&bank_id),
-                    black_box(&election_id),
-                    black_box(Some("session_bench".to_string())),
-                    black_box(Some("192.168.1.1".to_string()))
-                ).await.unwrap();
+                let login_result = security_context
+                    .secure_login(
+                        black_box(&bank_id),
+                        black_box(&election_id),
+                        black_box(Some("session_bench".to_string())),
+                        black_box(Some("192.168.1.1".to_string())),
+                    )
+                    .await
+                    .unwrap();
 
                 let (token, voter_hash) = match login_result {
                     vote::crypto::SecurityLoginResult::Success { token, .. } => {
@@ -205,12 +225,15 @@ fn bench_complete_voting_workflow(c: &mut Criterion) {
                 };
 
                 // Step 2: Secure vote (this handles lock acquisition)
-                let vote_result = security_context.secure_vote(
-                    black_box(&token),
-                    black_box(&voter_hash),
-                    black_box(&election_id),
-                    black_box(VotingMethod::Digital)
-                ).await.unwrap();
+                let vote_result = security_context
+                    .secure_vote(
+                        black_box(&token),
+                        black_box(&voter_hash),
+                        black_box(&election_id),
+                        black_box(VotingMethod::Digital),
+                    )
+                    .await
+                    .unwrap();
 
                 let voting_lock = match vote_result {
                     vote::crypto::SecurityVoteResult::LockAcquired { lock } => lock,
@@ -219,14 +242,14 @@ fn bench_complete_voting_workflow(c: &mut Criterion) {
 
                 // Step 3: Complete voting
                 let vote_id = Uuid::new_v4();
-                let completion = security_context.complete_voting(
-                    black_box(&voting_lock),
-                    black_box(Some(vote_id))
-                ).await.unwrap();
+                let completion = security_context
+                    .complete_voting(black_box(&voting_lock), black_box(Some(vote_id)))
+                    .await
+                    .unwrap();
 
                 black_box(completion);
             },
-            criterion::BatchSize::SmallInput
+            criterion::BatchSize::SmallInput,
         );
     });
 
@@ -263,7 +286,8 @@ fn bench_concurrent_voting(c: &mut Criterion) {
                             let voter_hash = hex::encode([i as u8; 32]);
 
                             // Issue token
-                            let token_result = ts.issue_token(&sm, &voter_hash, &eid, None).unwrap();
+                            let token_result =
+                                ts.issue_token(&sm, &voter_hash, &eid, None).unwrap();
                             let token_id = if let TokenResult::Issued(token) = token_result {
                                 token.token_id
                             } else {
@@ -271,24 +295,32 @@ fn bench_concurrent_voting(c: &mut Criterion) {
                             };
 
                             // Acquire lock
-                            let lock_result = ls.acquire_lock_with_token(
-                                &sm, &token_id, &voter_hash, &eid, VotingMethod::Digital
-                            ).unwrap();
+                            let lock_result = ls
+                                .acquire_lock_with_token(
+                                    &sm,
+                                    &token_id,
+                                    &voter_hash,
+                                    &eid,
+                                    VotingMethod::Digital,
+                                )
+                                .unwrap();
 
                             if let LockResult::Acquired(lock) = lock_result {
                                 // Complete voting
                                 let vote_id = Uuid::new_v4();
-                                ls.complete_voting_with_token_cleanup(&lock, Some(vote_id)).unwrap();
+                                ls.complete_voting_with_token_cleanup(&lock, Some(vote_id))
+                                    .unwrap();
                             }
                         }));
                     }
 
                     // Wait for all voters to complete
                     for handle in handles {
-                        black_box(handle.await.unwrap());
+                        handle.await.unwrap();
+                        black_box(());
                     }
                 });
-            }
+            },
         );
     }
 
@@ -308,13 +340,15 @@ fn bench_error_scenarios(c: &mut Criterion) {
         let election_id = Uuid::new_v4();
 
         b.iter(|| {
-            lock_service.acquire_lock_with_token(
-                black_box(&salt_manager),
-                black_box("invalid_token_12345"),
-                black_box(&voter_hash),
-                black_box(&election_id),
-                black_box(VotingMethod::Digital)
-            ).unwrap()
+            lock_service
+                .acquire_lock_with_token(
+                    black_box(&salt_manager),
+                    black_box("invalid_token_12345"),
+                    black_box(&voter_hash),
+                    black_box(&election_id),
+                    black_box(VotingMethod::Digital),
+                )
+                .unwrap()
         })
     });
 
@@ -329,27 +363,35 @@ fn bench_error_scenarios(c: &mut Criterion) {
                 let voter_hash = hex::encode(voter_bytes);
                 let election_id = Uuid::new_v4();
 
-                let token_result = token_service.issue_token(
-                    &salt_manager, &voter_hash, &election_id, None
-                ).unwrap();
+                let token_result = token_service
+                    .issue_token(&salt_manager, &voter_hash, &election_id, None)
+                    .unwrap();
                 let token_id = if let TokenResult::Issued(token) = token_result {
                     token.token_id
                 } else {
                     panic!("Token issuance failed");
                 };
 
-                let lock_result = lock_service.acquire_lock_with_token(
-                    &salt_manager, &token_id, &voter_hash, &election_id, VotingMethod::Digital
-                ).unwrap();
+                let lock_result = lock_service
+                    .acquire_lock_with_token(
+                        &salt_manager,
+                        &token_id,
+                        &voter_hash,
+                        &election_id,
+                        VotingMethod::Digital,
+                    )
+                    .unwrap();
 
                 if let LockResult::Acquired(lock) = lock_result {
-                    lock_service.complete_voting_with_token_cleanup(&lock, Some(Uuid::new_v4())).unwrap();
+                    lock_service
+                        .complete_voting_with_token_cleanup(&lock, Some(Uuid::new_v4()))
+                        .unwrap();
                 }
 
                 // Issue new token for second attempt
-                let second_token_result = token_service.issue_token(
-                    &salt_manager, &voter_hash, &election_id, None
-                ).unwrap();
+                let second_token_result = token_service
+                    .issue_token(&salt_manager, &voter_hash, &election_id, None)
+                    .unwrap();
                 let second_token_id = if let TokenResult::Issued(token) = second_token_result {
                     token.token_id
                 } else {
@@ -360,15 +402,17 @@ fn bench_error_scenarios(c: &mut Criterion) {
             },
             |(voter_hash, election_id, token_id)| {
                 // Attempt second vote - should be blocked
-                lock_service.acquire_lock_with_token(
-                    black_box(&salt_manager),
-                    black_box(&token_id),
-                    black_box(&voter_hash),
-                    black_box(&election_id),
-                    black_box(VotingMethod::Digital)
-                ).unwrap()
+                lock_service
+                    .acquire_lock_with_token(
+                        black_box(&salt_manager),
+                        black_box(&token_id),
+                        black_box(&voter_hash),
+                        black_box(&election_id),
+                        black_box(VotingMethod::Digital),
+                    )
+                    .unwrap()
             },
-            criterion::BatchSize::SmallInput
+            criterion::BatchSize::SmallInput,
         );
     });
 

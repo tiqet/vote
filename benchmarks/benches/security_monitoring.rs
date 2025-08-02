@@ -1,16 +1,14 @@
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::time::Duration;
 use uuid::Uuid;
 use vote::crypto::{
-    SecurityPerformanceMonitor, SecurityOperation,
-    SecurityTimingContext, ResourceUsage, SecurityIncidentManager,
-    EnhancedAuditSystem
+    EnhancedAuditSystem, ResourceUsage, SecurityIncidentManager, SecurityOperation,
+    SecurityPerformanceMonitor, SecurityTimingContext,
 };
 
 /// Security monitoring system benchmarks
 /// Performance validation for real-time threat detection
-
 fn bench_security_timing_recording(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -31,12 +29,15 @@ fn bench_security_timing_recording(c: &mut Criterion) {
                 memory_usage_mb: Some(256),
             };
 
-            monitor.record_timing(
-                black_box(SecurityOperation::TokenValidation),
-                black_box(Duration::from_micros(150)),
-                black_box(true),
-                black_box(context)
-            ).await.unwrap()
+            monitor
+                .record_timing(
+                    black_box(SecurityOperation::TokenValidation),
+                    black_box(Duration::from_micros(150)),
+                    black_box(true),
+                    black_box(context),
+                )
+                .await
+                .unwrap()
         })
     });
 
@@ -49,20 +50,23 @@ fn bench_security_timing_recording(c: &mut Criterion) {
                 b.to_async(&rt).iter(|| async {
                     for i in 0..batch_size {
                         let context = SecurityTimingContext {
-                            voter_hash: Some(format!("voter_{}", i)),
+                            voter_hash: Some(format!("voter_{i}")),
                             election_id: Some(Uuid::new_v4()),
                             ..Default::default()
                         };
 
-                        monitor.record_timing(
-                            SecurityOperation::VoterHashGeneration,
-                            Duration::from_micros(100 + i as u64),
-                            true,
-                            context
-                        ).await.unwrap();
+                        monitor
+                            .record_timing(
+                                SecurityOperation::VoterHashGeneration,
+                                Duration::from_micros(100 + i as u64),
+                                true,
+                                context,
+                            )
+                            .await
+                            .unwrap();
                     }
                 });
-            }
+            },
         );
     }
 
@@ -88,29 +92,29 @@ fn bench_authentication_pattern_analysis(c: &mut Criterion) {
             // Mix of successful and failed attempts
             let success = i % 3 != 0; // 2/3 success rate
 
-            monitor.record_timing(
-                SecurityOperation::SecureLogin,
-                Duration::from_millis(50 + (i % 20) as u64), // Variable timing
-                success,
-                context
-            ).await.unwrap();
+            monitor
+                .record_timing(
+                    SecurityOperation::SecureLogin,
+                    Duration::from_millis(50 + (i % 20) as u64), // Variable timing
+                    success,
+                    context,
+                )
+                .await
+                .unwrap();
         }
     });
 
     // Pattern retrieval performance
     group.bench_function("get_auth_patterns", |b| {
-        b.to_async(&rt).iter(|| async {
-            black_box(monitor.get_auth_patterns().await.unwrap())
-        })
+        b.to_async(&rt)
+            .iter(|| async { black_box(monitor.get_auth_patterns().await.unwrap()) })
     });
 
     // Pattern analysis performance
     group.bench_function("pattern_analysis", |b| {
         b.to_async(&rt).iter(|| async {
             let patterns = monitor.get_auth_patterns().await.unwrap();
-            let suspicious_count = patterns.iter()
-                .filter(|p| p.is_suspicious())
-                .count();
+            let suspicious_count = patterns.iter().filter(|p| p.is_suspicious()).count();
             black_box(suspicious_count)
         })
     });
@@ -137,7 +141,10 @@ fn bench_resource_monitoring(c: &mut Criterion) {
                 rate_limit_hits: 2,
             };
 
-            monitor.record_resource_usage(black_box(usage)).await.unwrap()
+            monitor
+                .record_resource_usage(black_box(usage))
+                .await
+                .unwrap()
         })
     });
 
@@ -154,7 +161,10 @@ fn bench_resource_monitoring(c: &mut Criterion) {
                 rate_limit_hits: 100,
             };
 
-            monitor.record_resource_usage(black_box(high_usage)).await.unwrap();
+            monitor
+                .record_resource_usage(black_box(high_usage))
+                .await
+                .unwrap();
             black_box(monitor.get_dos_patterns().await.unwrap())
         })
     });
@@ -178,12 +188,19 @@ fn bench_metrics_aggregation(c: &mut Criterion) {
                 ..Default::default()
             };
 
-            monitor.record_timing(
-                if i % 2 == 0 { SecurityOperation::TokenValidation } else { SecurityOperation::VoterHashGeneration },
-                Duration::from_micros(100 + (i % 50) as u64),
-                i % 10 != 0, // 90% success rate
-                context
-            ).await.unwrap();
+            monitor
+                .record_timing(
+                    if i % 2 == 0 {
+                        SecurityOperation::TokenValidation
+                    } else {
+                        SecurityOperation::VoterHashGeneration
+                    },
+                    Duration::from_micros(100 + (i % 50) as u64),
+                    i % 10 != 0, // 90% success rate
+                    context,
+                )
+                .await
+                .unwrap();
         }
 
         // Add resource data
@@ -203,23 +220,26 @@ fn bench_metrics_aggregation(c: &mut Criterion) {
 
     // Current metrics calculation performance
     group.bench_function("current_metrics_calculation", |b| {
-        b.to_async(&rt).iter(|| async {
-            black_box(monitor.get_current_metrics().await.unwrap())
-        })
+        b.to_async(&rt)
+            .iter(|| async { black_box(monitor.get_current_metrics().await.unwrap()) })
     });
 
     // Timing statistics calculation
     group.bench_function("timing_stats_calculation", |b| {
         b.to_async(&rt).iter(|| async {
-            black_box(monitor.get_timing_stats(&SecurityOperation::TokenValidation).await.unwrap())
+            black_box(
+                monitor
+                    .get_timing_stats(&SecurityOperation::TokenValidation)
+                    .await
+                    .unwrap(),
+            )
         })
     });
 
     // Baseline update performance
     group.bench_function("baseline_update", |b| {
-        b.to_async(&rt).iter(|| async {
-            monitor.update_baselines().await.unwrap()
-        })
+        b.to_async(&rt)
+            .iter(|| async { monitor.update_baselines().await.unwrap() })
     });
 
     group.finish();
@@ -240,7 +260,9 @@ fn bench_incident_management(c: &mut Criterion) {
     let token_service = std::sync::Arc::new(vote::crypto::VotingTokenService::for_testing());
     let lock_service = vote::crypto::VotingLockService::new(token_service.clone());
     let security_context = vote::crypto::SecurityContext::for_testing(
-        salt_manager, token_service, std::sync::Arc::new(lock_service)
+        salt_manager,
+        token_service,
+        std::sync::Arc::new(lock_service),
     );
 
     // Create suspicious activity for incident detection
@@ -252,31 +274,34 @@ fn bench_incident_management(c: &mut Criterion) {
             };
 
             // Simulate failed authentication attacks
-            performance_monitor.record_timing(
-                SecurityOperation::SecureLogin,
-                Duration::from_millis(100 + i * 10), // Increasing timing (suspicious)
-                false, // Failed attempts
-                context
-            ).await.unwrap();
+            performance_monitor
+                .record_timing(
+                    SecurityOperation::SecureLogin,
+                    Duration::from_millis(100 + i * 10), // Increasing timing (suspicious)
+                    false,                               // Failed attempts
+                    context,
+                )
+                .await
+                .unwrap();
         }
     });
 
     // Incident analysis and response performance
     group.bench_function("analyze_and_respond", |b| {
         b.to_async(&rt).iter(|| async {
-            black_box(incident_manager.analyze_and_respond(
-                &performance_monitor,
-                &audit_system,
-                &security_context
-            ).await.unwrap())
+            black_box(
+                incident_manager
+                    .analyze_and_respond(&performance_monitor, &audit_system, &security_context)
+                    .await
+                    .unwrap(),
+            )
         })
     });
 
     // Incident statistics calculation
     group.bench_function("incident_statistics", |b| {
-        b.to_async(&rt).iter(|| async {
-            black_box(incident_manager.get_incident_statistics().await.unwrap())
-        })
+        b.to_async(&rt)
+            .iter(|| async { black_box(incident_manager.get_incident_statistics().await.unwrap()) })
     });
 
     group.finish();
@@ -301,11 +326,16 @@ fn bench_audit_system_performance(c: &mut Criterion) {
                 ip_address: Some("192.168.1.100".to_string()),
             };
 
-            black_box(audit_system.log_security_event(
-                security_event,
-                Some(vote::crypto::ComplianceLevel::Standard),
-                Some("bench_correlation".to_string())
-            ).await.unwrap())
+            black_box(
+                audit_system
+                    .log_security_event(
+                        security_event,
+                        Some(vote::crypto::ComplianceLevel::Standard),
+                        Some("bench_correlation".to_string()),
+                    )
+                    .await
+                    .unwrap(),
+            )
         })
     });
 
@@ -313,27 +343,29 @@ fn bench_audit_system_performance(c: &mut Criterion) {
     rt.block_on(async {
         for i in 0..100 {
             let security_event = vote::crypto::SecurityEvent::LoginAttempt {
-                voter_hash: format!("audit_voter_{}", i),
+                voter_hash: format!("audit_voter_{i}"),
                 election_id: Uuid::new_v4(),
-                session_id: Some(format!("session_{}", i)),
+                session_id: Some(format!("session_{i}")),
                 success: i % 5 != 0, // Mostly successful
                 timestamp: 1725120000 + i,
                 ip_address: Some("192.168.1.1".to_string()),
             };
 
-            audit_system.log_security_event(
-                security_event,
-                Some(vote::crypto::ComplianceLevel::Standard),
-                None
-            ).await.unwrap();
+            audit_system
+                .log_security_event(
+                    security_event,
+                    Some(vote::crypto::ComplianceLevel::Standard),
+                    None,
+                )
+                .await
+                .unwrap();
         }
     });
 
     // Audit trail integrity verification performance
     group.bench_function("integrity_verification", |b| {
-        b.to_async(&rt).iter(|| async {
-            black_box(audit_system.verify_integrity().await.unwrap())
-        })
+        b.to_async(&rt)
+            .iter(|| async { black_box(audit_system.verify_integrity().await.unwrap()) })
     });
 
     // Audit record queries
@@ -377,29 +409,33 @@ fn bench_concurrent_security_operations(c: &mut Criterion) {
                             // Each thread performs multiple security operations
                             for j in 0..10 {
                                 let context = SecurityTimingContext {
-                                    voter_hash: Some(format!("concurrent_voter_{}_{}", i, j)),
+                                    voter_hash: Some(format!("concurrent_voter_{i}_{j}")),
                                     ..Default::default()
                                 };
 
-                                monitor_instance.record_timing(
-                                    SecurityOperation::TokenValidation,
-                                    Duration::from_micros(150),
-                                    true,
-                                    context
-                                ).await.unwrap();
+                                monitor_instance
+                                    .record_timing(
+                                        SecurityOperation::TokenValidation,
+                                        Duration::from_micros(150),
+                                        true,
+                                        context,
+                                    )
+                                    .await
+                                    .unwrap();
                             }
                         }));
                     }
 
                     // Wait for all operations to complete
                     for handle in handles {
-                        black_box(handle.await.unwrap());
+                        handle.await.unwrap();
+                        black_box(());
                     }
 
                     // Get final metrics
                     black_box(monitor.get_current_metrics().await.unwrap());
                 });
-            }
+            },
         );
     }
 
