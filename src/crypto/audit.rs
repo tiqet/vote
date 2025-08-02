@@ -521,7 +521,6 @@ impl AuditTrail {
     }
 
     /// Private helper methods
-
     fn record_matches_query(&self, record: &AuditRecord, query: &AuditQuery) -> bool {
         // Time range check
         if let Some(start_time) = query.start_time {
@@ -800,7 +799,6 @@ impl EnhancedAuditSystem {
     }
 
     /// Private helper methods
-
     async fn stream_to_subscribers(&self, _audit_record: &AuditRecord) {
         if let Ok(stream) = self.real_time_stream.read() {
             for subscriber in stream.iter() {
@@ -824,6 +822,7 @@ pub struct AuditStreamSubscriber {
 
 /// Compliance engine for automated compliance checking
 pub struct ComplianceEngine {
+    #[allow(dead_code)]
     violation_patterns: Arc<RwLock<Vec<CompliancePattern>>>,
     compliance_statistics: Arc<RwLock<ComplianceStatistics>>,
 }

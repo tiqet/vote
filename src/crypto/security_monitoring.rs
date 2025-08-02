@@ -31,6 +31,7 @@ const MAX_RESOURCE_SAMPLES: usize = 1000;
 const TIMING_ATTACK_THRESHOLD_MICROS: u64 = 50;
 
 /// DoS detection thresholds
+#[allow(dead_code)]
 const DOS_REQUEST_THRESHOLD: u32 = 1000; // requests per minute
 const DOS_MEMORY_THRESHOLD_MB: u64 = 512; // MB
 const DOS_CPU_THRESHOLD_PERCENT: f64 = 80.0;
@@ -618,7 +619,6 @@ impl SecurityPerformanceMonitor {
     }
 
     /// Private helper methods
-
     async fn analyze_timing_threat(
         &self,
         timing: &SecurityTiming,
@@ -655,6 +655,7 @@ impl SecurityPerformanceMonitor {
         Ok(assessment)
     }
 
+    #[allow(dead_code)]
     async fn update_auth_pattern(&self, timing: &SecurityTiming, success: bool) -> Result<()> {
         if let Some(voter_hash) = &timing.context.voter_hash {
             let mut auth_patterns = self
@@ -1032,7 +1033,7 @@ mod tests {
 
         // Record anomalous timing
         let anomalous_duration = Duration::from_millis(100); // Much longer
-        let assessment2 = monitor
+        let _assessment2 = monitor
             .record_timing(
                 SecurityOperation::TokenValidation,
                 anomalous_duration,

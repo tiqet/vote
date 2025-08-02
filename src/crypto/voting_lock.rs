@@ -189,7 +189,7 @@ impl VotingLockService {
     /// 2. Check if voter has already completed voting (prevents double voting)
     /// 3. Check for active concurrent locks (prevents race conditions)
     /// 4. If all checks pass, acquire lock for voting session
-    /// Enhanced lock acquisition with timing attack protection
+    ///    Enhanced lock acquisition with timing attack protection
     pub fn acquire_lock_with_token(
         &self,
         salt_manager: &crate::crypto::SecureSaltManager,
@@ -207,7 +207,7 @@ impl VotingLockService {
             self.token_service
                 .validate_token(salt_manager, token_id, voter_hash, election_id)?;
 
-        let valid_token = match token_validation {
+        let _valid_token = match token_validation {
             TokenResult::Valid(token) => token,
             TokenResult::Invalid { reason } => {
                 // Still perform dummy completion and lock checks to maintain timing
@@ -670,17 +670,10 @@ impl VotingLockService {
         let completion_key = completion.completion_key();
 
         {
-            let mut completions = self
-                .completions
+            self.completions
                 .write()
-                .map_err(|_| voting_error!("Completion service write error"))?;
-            let mut locks = self
-                .locks
-                .write()
-                .map_err(|_| voting_error!("Lock service write error"))?;
-
-            completions.insert(completion_key, completion.clone());
-            locks.remove(&lock.lock_key());
+                .map_err(|_| voting_error!("Completion service write error"))?
+                .insert(completion_key, completion.clone());
         }
 
         Ok(completion)
@@ -792,9 +785,8 @@ mod tests {
             )
             .unwrap();
 
-        let token = match token_result {
-            TokenResult::Issued(token) => token,
-            _ => panic!("Expected token to be issued"),
+        let TokenResult::Issued(token) = token_result else {
+            panic!("Expected token to be issued")
         };
 
         println!("✅ Token issued: {}", token.token_id);
@@ -810,9 +802,8 @@ mod tests {
             )
             .unwrap();
 
-        let voting_lock = match lock_result {
-            LockResult::Acquired(lock) => lock,
-            _ => panic!("Expected to acquire lock with valid token"),
+        let LockResult::Acquired(voting_lock) = lock_result else {
+            panic!("Expected to acquire lock with valid token")
         };
 
         println!("✅ Voting lock acquired with token validation");
@@ -847,9 +838,8 @@ mod tests {
             )
             .unwrap();
 
-        let new_token = match new_token_result {
-            TokenResult::Issued(token) => token,
-            _ => panic!("Should be able to issue new token"),
+        let TokenResult::Issued(new_token) = new_token_result else {
+            panic!("Should be able to issue new token")
         };
 
         let second_lock_result = lock_service
@@ -918,9 +908,8 @@ mod tests {
             )
             .unwrap();
 
-        let token = match token_result {
-            TokenResult::Issued(token) => token,
-            _ => panic!("Expected token to be issued"),
+        let TokenResult::Issued(token) = token_result else {
+            panic!("Expected token to be issued")
         };
 
         let lock_result = lock_service
@@ -933,9 +922,8 @@ mod tests {
             )
             .unwrap();
 
-        let _voting_lock = match lock_result {
-            LockResult::Acquired(lock) => lock,
-            _ => panic!("Expected to acquire lock"),
+        let LockResult::Acquired(_voting_lock) = lock_result else {
+            panic!("Expected to acquire lock")
         };
 
         // Logout voter

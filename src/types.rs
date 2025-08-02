@@ -167,7 +167,7 @@ mod tests {
         let ended_election = Election {
             start_time: now - 7200, // 2 hours ago
             end_time: now - 3600,   // 1 hour ago
-            ..future_election.clone()
+            ..future_election
         };
 
         assert!(!ended_election.is_future());

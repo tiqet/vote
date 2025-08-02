@@ -407,7 +407,7 @@ async fn test_token_security_attack_scenarios() -> Result<()> {
         )?;
 
         match result {
-            TokenResult::Issued(token) => {
+            TokenResult::Issued(_token) => {
                 println!("   Token {} issued", i + 1);
                 if i >= 2 {
                     // Should fail after max tokens (2 for testing)
@@ -559,7 +559,7 @@ async fn test_session_management_scenarios() -> Result<()> {
         _ => panic!(),
     };
 
-    let mobile_completion =
+    let _mobile_completion =
         lock_service.complete_voting_with_token_cleanup(&mobile_lock, Some(Uuid::new_v4()))?;
     println!("✅ Vote completed using mobile session");
 
@@ -918,7 +918,7 @@ async fn test_key_rotation_with_token_security() -> Result<()> {
 
     // Complete voting
     let vote_id = Uuid::new_v4();
-    let completion =
+    let _completion =
         lock_service.complete_voting_with_token_cleanup(&voting_lock, Some(vote_id))?;
     println!("✅ Voting completed with token cleanup");
 

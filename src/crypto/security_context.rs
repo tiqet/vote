@@ -31,9 +31,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-/// Maximum security events to keep in memory
-const MAX_SECURITY_EVENTS: usize = 10000;
-
 /// Maximum failed attempts before incident escalation
 const MAX_FAILED_ATTEMPTS: usize = 5;
 
@@ -209,6 +206,7 @@ pub struct SecurityMetrics {
 
 /// Recent failed attempts tracking
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct FailedAttempt {
     timestamp: u64,
     operation: String,
@@ -221,7 +219,7 @@ pub struct SecurityContext {
     salt_manager: Arc<SecureSaltManager>,
     token_service: Arc<VotingTokenService>,
     lock_service: Arc<VotingLockService>,
-    key_manager: Option<Arc<KeyRotationManager>>,
+    _key_manager: Option<Arc<KeyRotationManager>>,
     rate_limiter: Arc<Mutex<CryptoRateLimiter>>,
 
     // Enhanced audit system
@@ -328,7 +326,7 @@ impl SecurityContext {
             salt_manager,
             token_service,
             lock_service,
-            key_manager,
+            _key_manager: key_manager,
             rate_limiter,
             audit_system,
             performance_monitor,
@@ -368,23 +366,24 @@ impl SecurityContext {
     ) -> Result<SecurityLoginResult> {
         let start_time = SystemTime::now();
 
-        // Check rate limiting
-        {
+        // Check rate limiting - Fixed: scope the mutex properly
+        let rate_limit_result = {
             let mut rate_limiter = self
                 .rate_limiter
                 .lock()
                 .map_err(|_| crypto_error!("Rate limiter lock error"))?;
+            rate_limiter.check_rate_limit()
+        }; // Lock released here
 
-            if rate_limiter.check_rate_limit().is_err() {
-                self.log_security_event(SecurityEvent::RateLimitExceeded {
-                    voter_hash: "rate_limited".to_string(),
-                    operation: "login".to_string(),
-                    timestamp: self.current_timestamp(),
-                })
-                .await;
+        if rate_limit_result.is_err() {
+            self.log_security_event(SecurityEvent::RateLimitExceeded {
+                voter_hash: "rate_limited".to_string(),
+                operation: "login".to_string(),
+                timestamp: self.current_timestamp(),
+            })
+            .await;
 
-                return Ok(SecurityLoginResult::RateLimited);
-            }
+            return Ok(SecurityLoginResult::RateLimited);
         }
 
         // Generate voter hash
@@ -859,7 +858,6 @@ impl SecurityContext {
     }
 
     /// Private helper methods
-
     async fn log_security_event(&self, event: SecurityEvent) {
         if !self.config.security_logging_enabled {
             return;
@@ -925,7 +923,8 @@ impl SecurityContext {
             reason: reason.to_string(),
         };
 
-        {
+        // Fixed: Scope the lock properly to avoid holding across await
+        let should_escalate = {
             let mut failed_attempts = self.failed_attempts.write().unwrap();
             let attempts = failed_attempts.entry(identifier.to_string()).or_default();
 
@@ -941,25 +940,26 @@ impl SecurityContext {
                 }
             }
 
-            // Check for incident
-            if attempts.len() >= self.config.max_failed_attempts
+            // Check for incident - return whether to escalate
+            attempts.len() >= self.config.max_failed_attempts
                 && self.config.incident_detection_enabled
-            {
-                let incident_id = Uuid::new_v4();
-                let incident_event = SecurityEvent::SecurityIncident {
-                    incident_id,
-                    incident_type: SecurityIncidentType::RepeatedFailedAuthentication,
-                    voter_hash: identifier.to_string(),
-                    description: format!("Too many failed {operation} attempts"),
-                    severity: SecuritySeverity::High,
-                    timestamp: current_time,
-                };
+        }; // Lock released here
 
-                self.log_security_event(incident_event).await;
+        if should_escalate {
+            let incident_id = Uuid::new_v4();
+            let incident_event = SecurityEvent::SecurityIncident {
+                incident_id,
+                incident_type: SecurityIncidentType::RepeatedFailedAuthentication,
+                voter_hash: identifier.to_string(),
+                description: format!("Too many failed {operation} attempts"),
+                severity: SecuritySeverity::High,
+                timestamp: current_time,
+            };
 
-                if self.config.auto_response_enabled {
-                    self.escalate_security_level(identifier).await;
-                }
+            self.log_security_event(incident_event).await;
+
+            if self.config.auto_response_enabled {
+                self.escalate_security_level(identifier).await;
             }
         }
 
@@ -1389,13 +1389,13 @@ mod tests {
 
         let bank_id = "CZ1234567890";
         let election_id = Uuid::new_v4();
-        let session_id = Some("test_session_123".to_string());
+        let session_id = "test_session_123".to_string();
 
         let login_result = security_context
             .secure_login(
                 bank_id,
                 &election_id,
-                session_id.clone(),
+                Some(session_id.clone()),
                 Some("192.168.1.100".to_string()),
             )
             .await
@@ -1408,7 +1408,7 @@ mod tests {
                 security_level,
             } => {
                 assert_eq!(security_level, SecurityLevel::Standard);
-                assert_eq!(returned_session, session_id.unwrap());
+                assert_eq!(returned_session, session_id);
                 println!(
                     "✅ Secure login successful: token={}",
                     &token.token_id[..12]
@@ -1477,7 +1477,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (token, session_id) = match login_result {
+        let (token, _session_id) = match login_result {
             SecurityLoginResult::Success {
                 token, session_id, ..
             } => (token, session_id),

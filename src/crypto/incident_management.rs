@@ -35,7 +35,11 @@ const CORRELATION_WINDOW_SECONDS: u64 = 3600; // 1 hour
 
 /// Incident severity escalation thresholds
 const CRITICAL_INCIDENT_THRESHOLD: f64 = 0.9;
+
+#[allow(dead_code)]
 const HIGH_INCIDENT_THRESHOLD: f64 = 0.7;
+
+#[allow(dead_code)]
 const MEDIUM_INCIDENT_THRESHOLD: f64 = 0.4;
 
 /// Comprehensive security incident with automated management
@@ -585,11 +589,15 @@ pub enum ResponseResult {
 /// Pattern correlator for detecting complex attack patterns
 pub struct PatternCorrelator {
     // Pattern detection state
+    #[allow(dead_code)]
     pattern_history: Arc<RwLock<VecDeque<PatternEvent>>>,
+    #[allow(dead_code)]
     correlation_rules: Arc<RwLock<Vec<CorrelationRule>>>,
 
     // Configuration
+    #[allow(dead_code)]
     correlation_window: Duration,
+    #[allow(dead_code)]
     max_pattern_history: usize,
 }
 
@@ -765,24 +773,34 @@ pub enum PatternType {
 /// Pattern event for correlation
 #[derive(Debug, Clone)]
 struct PatternEvent {
+    #[allow(dead_code)]
     event_type: String,
+    #[allow(dead_code)]
     entity: String,
+    #[allow(dead_code)]
     timestamp: u64,
+    #[allow(dead_code)]
     metadata: HashMap<String, String>,
 }
 
 /// Correlation rule definition
 #[derive(Debug, Clone)]
 struct CorrelationRule {
+    #[allow(dead_code)]
     rule_id: String,
+    #[allow(dead_code)]
     description: String,
+    #[allow(dead_code)]
     conditions: Vec<String>,
+    #[allow(dead_code)]
     confidence_threshold: f64,
 }
 
 /// Escalation engine for determining appropriate responses
 pub struct EscalationEngine {
+    #[allow(dead_code)]
     escalation_rules: Arc<RwLock<Vec<EscalationRule>>>,
+    #[allow(dead_code)]
     response_history: Arc<RwLock<HashMap<String, Vec<AutomatedResponse>>>>,
 }
 
@@ -920,14 +938,19 @@ impl EscalationEngine {
 /// Escalation rule definition
 #[derive(Debug, Clone)]
 struct EscalationRule {
+    #[allow(dead_code)]
     rule_id: String,
+    #[allow(dead_code)]
     conditions: Vec<String>,
+    #[allow(dead_code)]
     responses: Vec<String>,
+    #[allow(dead_code)]
     escalation_threshold: f64,
 }
 
 /// Response orchestrator for executing automated responses
 pub struct ResponseOrchestrator {
+    #[allow(dead_code)]
     execution_queue: Arc<Mutex<VecDeque<(Uuid, ResponseType)>>>,
     execution_history: Arc<RwLock<HashMap<Uuid, AutomatedResponse>>>,
 }

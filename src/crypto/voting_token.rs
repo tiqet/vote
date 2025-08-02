@@ -852,9 +852,8 @@ mod tests {
             )
             .unwrap();
 
-        let token = match result {
-            TokenResult::Issued(token) => token,
-            _ => panic!("Expected token to be issued"),
+        let TokenResult::Issued(token) = result else {
+            panic!("Expected token to be issued")
         };
 
         assert_eq!(token.voter_hash, voter_hash);
@@ -948,9 +947,8 @@ mod tests {
             .issue_token(&salt_manager, &voter_hash, &election_id, None)
             .unwrap();
 
-        let token = match result {
-            TokenResult::Issued(token) => token,
-            _ => panic!("Expected token to be issued"),
+        let TokenResult::Issued(token) = result else {
+            panic!("Expected token to be issued")
         };
 
         // Mark as used
@@ -986,13 +984,11 @@ mod tests {
             .issue_token(&salt_manager, &voter_hash, &election2, None)
             .unwrap();
 
-        let token1 = match result1 {
-            TokenResult::Issued(t) => t,
-            _ => panic!(),
+        let TokenResult::Issued(token1) = result1 else {
+            panic!()
         };
-        let token2 = match result2 {
-            TokenResult::Issued(t) => t,
-            _ => panic!(),
+        let TokenResult::Issued(token2) = result2 else {
+            panic!()
         };
 
         // Tokens should be different
@@ -1027,9 +1023,9 @@ mod tests {
         let token_result = token_service
             .issue_token(&salt_manager, &voter_hash, &election_id, None)
             .unwrap();
-        let valid_token = match token_result {
-            TokenResult::Issued(t) => t,
-            _ => panic!(),
+
+        let TokenResult::Issued(valid_token) = token_result else {
+            panic!()
         };
 
         // Test valid token timing

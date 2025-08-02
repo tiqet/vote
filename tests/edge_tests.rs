@@ -974,7 +974,7 @@ async fn test_token_expiration_edge_cases() -> Result<()> {
     println!("⏰ Testing token expiration edge cases...");
 
     let salt_manager = SecureSaltManager::for_testing();
-    let token_service = VotingTokenService::for_testing();
+    let _token_service = VotingTokenService::for_testing();
     let election_id = Uuid::new_v4();
     let voter_hash_str = hex::encode([1u8; 32]);
 

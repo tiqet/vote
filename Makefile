@@ -39,7 +39,7 @@ format: ## Format code
 
 lint: ## Run clippy linting
 	@echo "🔍 Running clippy..."
-	@cargo clippy -- -D warnings
+	@cargo clippy --all-targets --all-features -- -D warnings
 	@echo "✅ Lint complete"
 
 # Integration test specifically
@@ -57,3 +57,7 @@ test-simple: ## Run simple tests with output
 # Quick development cycle
 dev: check test-simple ## Quick development check (compile + simple test)
 	@echo "✅ Development cycle complete"
+
+# Get ready before commit
+ready: check test lint format ## Quick development check (check + test + lint + format)
+	@echo "✅ Ready to commit"

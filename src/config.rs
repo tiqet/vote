@@ -527,8 +527,8 @@ impl SecurityConfig {
             .compliance_notes
             .push("Enable comprehensive audit logging for regulatory requirements".to_string());
 
-        // Final score adjustment
-        report.security_score = report.security_score.max(0.0).min(1.0);
+        // Final score adjustment - Fixed: Use clamp instead of manual max().min()
+        report.security_score = report.security_score.clamp(0.0, 1.0);
 
         if report.security_score < 0.8 {
             report.overall_ready = false;
@@ -538,7 +538,6 @@ impl SecurityConfig {
     }
 
     /// Helper methods for parsing and validation
-
     fn parse_u64_env(
         key: &str,
         default: u64,
