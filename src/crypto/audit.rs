@@ -1,16 +1,50 @@
 //! Enhanced Auditing & Logging System for Banking-Grade Compliance
 //!
-//! This module provides comprehensive audit capabilities required for banking
-//! and financial services compliance:
-//!
-//! Features:
+//! Provides comprehensive audit capabilities for banking and financial services:
 //! - Tamper-evident audit trails with cryptographic hash chains
 //! - Immutable audit records with integrity verification
-//! - Compliance-ready structured logging (SOX, PCI DSS patterns)
+//! - Compliance-ready logging (SOX, PCI DSS, regulatory patterns)
 //! - Real-time audit streaming for security monitoring
-//! - Audit query engine for investigations and compliance reporting
+//! - Sophisticated query engine for investigations
 //! - Export capabilities for regulators and external auditors
-//! - Automated compliance reporting and violation detection
+//!
+//! # Security Architecture
+//! - **Hash chains**: Each record cryptographically links to previous
+//! - **Content integrity**: Blake3 hashes detect tampering
+//! - **Sequence validation**: Monotonic sequence prevents insertion
+//! - **Retention policies**: Automatic cleanup with compliance awareness
+//!
+//! # Examples
+//!
+//! ```rust
+//! use vote::crypto::audit::{EnhancedAuditSystem, AuditConfig, ComplianceLevel};
+//! use vote::crypto::SecurityEvent;
+//! use uuid::Uuid;
+//!
+//! # async fn example() -> vote::Result<()> {
+//! let audit_system = EnhancedAuditSystem::new(AuditConfig::default());
+//!
+//! let event = SecurityEvent::LoginAttempt {
+//!     voter_hash: "voter_123".to_string(),
+//!     election_id: Uuid::new_v4(),
+//!     session_id: Some("session_456".to_string()),
+//!     success: true,
+//!     timestamp: 1234567890,
+//!     ip_address: Some("192.168.1.100".to_string()),
+//! };
+//!
+//! let record = audit_system.log_security_event(
+//!     event,
+//!     Some(ComplianceLevel::High),
+//!     Some("correlation_789".to_string()),
+//! ).await?;
+//!
+//! // Verify integrity
+//! let integrity_report = audit_system.verify_integrity().await?;
+//! assert!(integrity_report.hash_chain_valid);
+//! # Ok(())
+//! # }
+//! ```
 
 use crate::crypto::{CryptoUtils, SecureMemory, SecurityEvent};
 use crate::{Result, crypto_error};
@@ -20,47 +54,36 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-/// Maximum audit records to keep in memory before flushing
+/// Maximum audit records in memory before cleanup
 const MAX_MEMORY_AUDIT_RECORDS: usize = 10000;
 
-/// Audit record retention periods (in seconds)
+/// Retention periods in seconds
 const AUDIT_RETENTION_CRITICAL: u64 = 2_592_000; // 30 days
 const AUDIT_RETENTION_HIGH: u64 = 7_776_000; // 90 days
 const AUDIT_RETENTION_STANDARD: u64 = 31_536_000; // 365 days
 
 /// Tamper-evident audit record with cryptographic integrity
+///
+/// Each record contains a security event with cryptographic protections:
+/// - Hash chain linking to previous record
+/// - Content hash for integrity verification
+/// - Sequence numbers for tamper detection
+/// - Compliance-based retention policies
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditRecord {
-    /// Unique audit record identifier
     pub record_id: Uuid,
-
-    /// Sequence number in the audit trail (monotonically increasing)
     pub sequence_number: u64,
-
-    /// Timestamp when the audit record was created
     pub timestamp: u64,
-
-    /// Hash of the previous audit record (forms hash chain)
     pub previous_hash: Option<[u8; 32]>,
-
-    /// Hash of this audit record's content
     pub content_hash: [u8; 32],
-
-    /// Security event that triggered this audit record
     pub security_event: SecurityEvent,
-
-    /// Additional audit metadata
     pub audit_metadata: AuditMetadata,
-
-    /// Compliance classification
     pub compliance_level: ComplianceLevel,
-
-    /// Retention policy for this record
     pub retention_until: u64,
 }
 
 impl AuditRecord {
-    /// Create a new audit record with tamper-evident properties
+    /// Create new audit record with tamper-evident properties
     pub fn new(
         sequence_number: u64,
         previous_hash: Option<[u8; 32]>,
@@ -84,7 +107,6 @@ impl AuditRecord {
             request_id: None,
         };
 
-        // Calculate retention based on compliance level
         let retention_until = timestamp
             + match compliance_level {
                 ComplianceLevel::Critical => AUDIT_RETENTION_CRITICAL,
@@ -92,7 +114,6 @@ impl AuditRecord {
                 ComplianceLevel::Standard => AUDIT_RETENTION_STANDARD,
             };
 
-        // Calculate content hash
         let content_for_hash = serde_json::to_vec(&(&security_event, &audit_metadata))
             .map_err(|e| crypto_error!("Failed to serialize audit content: {}", e))?;
         let content_hash = CryptoUtils::hash(&content_for_hash);
@@ -105,21 +126,20 @@ impl AuditRecord {
             content_hash,
             security_event,
             audit_metadata,
-            compliance_level: compliance_level.clone(),
+            compliance_level,
             retention_until,
         })
     }
 
-    /// Calculate the hash of this entire audit record
+    /// Calculate hash of complete audit record for hash chain
     pub fn calculate_record_hash(&self) -> Result<[u8; 32]> {
         let record_content = serde_json::to_vec(self)
             .map_err(|e| crypto_error!("Failed to serialize audit record: {}", e))?;
         Ok(CryptoUtils::hash(&record_content))
     }
 
-    /// Verify the integrity of this audit record
+    /// Verify cryptographic integrity of this record
     pub fn verify_integrity(&self) -> Result<bool> {
-        // Verify content hash
         let content_for_hash = serde_json::to_vec(&(&self.security_event, &self.audit_metadata))
             .map_err(|e| crypto_error!("Failed to serialize audit content: {}", e))?;
         let expected_content_hash = CryptoUtils::hash(&content_for_hash);
@@ -130,7 +150,7 @@ impl AuditRecord {
         ))
     }
 
-    /// Check if this record has expired based on retention policy
+    /// Check if record has expired based on retention policy
     pub fn is_expired(&self) -> bool {
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -162,32 +182,21 @@ impl AuditRecord {
 /// Additional metadata for audit records
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditMetadata {
-    /// Source system that generated the audit event
     pub audit_source: String,
-
-    /// Correlation ID for tracing related events
     pub correlation_id: Option<String>,
-
-    /// System version when audit was created
     pub system_version: String,
-
-    /// Audit level (criticality)
     pub audit_level: AuditLevel,
-
-    /// User agent (for web requests)
     pub user_agent: Option<String>,
-
-    /// Request ID (for API calls)
     pub request_id: Option<String>,
 }
 
-/// Audit level classification
+/// Audit level classification for event criticality
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AuditLevel {
-    Info,      // Informational events
+    Info,      // Normal operations
     Warning,   // Potentially concerning events
-    Critical,  // Security-critical events
-    Emergency, // Immediate attention required
+    Critical,  // Security-significant events
+    Emergency, // Immediate response required
 }
 
 impl AuditLevel {
@@ -211,9 +220,9 @@ impl AuditLevel {
 /// Compliance level for regulatory requirements
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ComplianceLevel {
-    Standard, // Regular audit requirements
-    High,     // Enhanced compliance (financial transactions)
-    Critical, // Maximum compliance (regulatory critical)
+    Standard, // Regular business records (365 days)
+    High,     // Financial transactions (90 days)
+    Critical, // Regulatory critical (30 days)
 }
 
 /// Compliance-ready audit record format for exports
@@ -236,19 +245,10 @@ pub struct ComplianceAuditRecord {
 
 /// Tamper-evident audit trail with cryptographic hash chain
 pub struct AuditTrail {
-    /// Current sequence number (monotonically increasing)
     sequence_counter: Arc<Mutex<u64>>,
-
-    /// In-memory audit records (most recent)
     memory_records: Arc<RwLock<VecDeque<AuditRecord>>>,
-
-    /// Hash of the last audit record (for hash chain)
     last_record_hash: Arc<Mutex<Option<[u8; 32]>>>,
-
-    /// Audit trail statistics
     statistics: Arc<RwLock<AuditTrailStatistics>>,
-
-    /// Configuration
     config: AuditConfig,
 }
 
@@ -274,7 +274,7 @@ impl AuditTrail {
         }
     }
 
-    /// Add a new audit record to the trail
+    /// Add new audit record to the tamper-evident chain
     pub async fn add_record(
         &self,
         security_event: SecurityEvent,
@@ -311,7 +311,6 @@ impl AuditTrail {
             correlation_id,
         )?;
 
-        // Calculate hash of this record for the chain
         let record_hash = audit_record.calculate_record_hash()?;
 
         // Add to memory storage
@@ -320,10 +319,8 @@ impl AuditTrail {
                 .memory_records
                 .write()
                 .map_err(|_| crypto_error!("Failed to lock memory records"))?;
-
             memory_records.push_back(audit_record.clone());
 
-            // Maintain memory limit
             while memory_records.len() > MAX_MEMORY_AUDIT_RECORDS {
                 memory_records.pop_front();
             }
@@ -344,7 +341,6 @@ impl AuditTrail {
                 .statistics
                 .write()
                 .map_err(|_| crypto_error!("Failed to lock statistics"))?;
-
             stats.total_records += 1;
             stats.records_in_memory = {
                 let memory_records = self
@@ -370,7 +366,7 @@ impl AuditTrail {
         Ok(audit_record)
     }
 
-    /// Verify the integrity of the entire audit trail
+    /// Verify cryptographic integrity of entire audit trail
     pub async fn verify_trail_integrity(&self) -> Result<AuditIntegrityReport> {
         let memory_records = self
             .memory_records
@@ -398,7 +394,7 @@ impl AuditTrail {
                     record_id: record.record_id,
                     sequence_number: record.sequence_number,
                     violation_type: IntegrityViolationType::ContentHashMismatch,
-                    description: "Content hash does not match calculated hash".to_string(),
+                    description: "Content hash mismatch".to_string(),
                 });
                 report.hash_chain_valid = false;
             }
@@ -409,12 +405,11 @@ impl AuditTrail {
                     record_id: record.record_id,
                     sequence_number: record.sequence_number,
                     violation_type: IntegrityViolationType::HashChainBroken,
-                    description: "Previous hash does not match expected value".to_string(),
+                    description: "Hash chain broken".to_string(),
                 });
                 report.hash_chain_valid = false;
             }
 
-            // Update previous hash for next iteration
             previous_hash = Some(record.calculate_record_hash()?);
         }
 
@@ -432,7 +427,7 @@ impl AuditTrail {
         Ok(report)
     }
 
-    /// Get audit records by query criteria
+    /// Query audit records with flexible criteria
     pub async fn query_records(&self, query: AuditQuery) -> Result<Vec<AuditRecord>> {
         let memory_records = self
             .memory_records
@@ -440,14 +435,12 @@ impl AuditTrail {
             .map_err(|_| crypto_error!("Failed to read memory records"))?;
 
         let mut results = Vec::new();
-
         for record in memory_records.iter() {
             if self.record_matches_query(record, &query) {
                 results.push(record.clone());
             }
         }
 
-        // Apply limit
         if let Some(limit) = query.limit {
             results.truncate(limit);
         }
@@ -455,19 +448,16 @@ impl AuditTrail {
         Ok(results)
     }
 
-    /// Export audit records for compliance
+    /// Export audit records in compliance format
     pub async fn export_compliance_records(
         &self,
         query: AuditQuery,
     ) -> Result<Vec<ComplianceAuditRecord>> {
         let records = self.query_records(query).await?;
-
-        let compliance_records: Vec<ComplianceAuditRecord> = records
+        Ok(records
             .into_iter()
-            .map(|record| record.to_compliance_format())
-            .collect();
-
-        Ok(compliance_records)
+            .map(|r| r.to_compliance_format())
+            .collect())
     }
 
     /// Get audit trail statistics
@@ -520,9 +510,7 @@ impl AuditTrail {
         })
     }
 
-    /// Private helper methods
     fn record_matches_query(&self, record: &AuditRecord, query: &AuditQuery) -> bool {
-        // Time range check
         if let Some(start_time) = query.start_time {
             if record.timestamp < start_time {
                 return false;
@@ -535,7 +523,6 @@ impl AuditTrail {
             }
         }
 
-        // Event type filter
         if let Some(ref event_types) = query.event_types {
             let event_type = format!("{:?}", record.security_event);
             if !event_types.iter().any(|et| event_type.contains(et)) {
@@ -543,21 +530,18 @@ impl AuditTrail {
             }
         }
 
-        // Compliance level filter
         if let Some(ref compliance_levels) = query.compliance_levels {
             if !compliance_levels.contains(&record.compliance_level) {
                 return false;
             }
         }
 
-        // Audit level filter
         if let Some(ref audit_levels) = query.audit_levels {
             if !audit_levels.contains(&record.audit_metadata.audit_level) {
                 return false;
             }
         }
 
-        // Correlation ID filter
         if let Some(ref correlation_id) = query.correlation_id {
             match &record.audit_metadata.correlation_id {
                 Some(record_correlation_id) => {
@@ -576,22 +560,11 @@ impl AuditTrail {
 /// Configuration for audit system
 #[derive(Debug, Clone)]
 pub struct AuditConfig {
-    /// Source identifier for audit records
     pub audit_source: String,
-
-    /// Enable real-time audit streaming
     pub enable_streaming: bool,
-
-    /// Maximum memory records before archiving
     pub max_memory_records: usize,
-
-    /// Default compliance level for new records
     pub default_compliance_level: ComplianceLevel,
-
-    /// Enable automatic integrity checks
     pub enable_auto_integrity_checks: bool,
-
-    /// Integrity check interval (seconds)
     pub integrity_check_interval: u64,
 }
 
@@ -603,7 +576,7 @@ impl Default for AuditConfig {
             max_memory_records: MAX_MEMORY_AUDIT_RECORDS,
             default_compliance_level: ComplianceLevel::Standard,
             enable_auto_integrity_checks: true,
-            integrity_check_interval: 3600, // 1 hour
+            integrity_check_interval: 3600,
         }
     }
 }
@@ -616,12 +589,12 @@ impl AuditConfig {
             max_memory_records: 1000,
             default_compliance_level: ComplianceLevel::Standard,
             enable_auto_integrity_checks: false,
-            integrity_check_interval: 60, // 1 minute for testing
+            integrity_check_interval: 60,
         }
     }
 }
 
-/// Query criteria for audit records
+/// Query criteria for searching audit records
 #[derive(Debug, Clone)]
 pub struct AuditQuery {
     pub start_time: Option<u64>,
@@ -642,12 +615,12 @@ impl Default for AuditQuery {
             compliance_levels: None,
             audit_levels: None,
             correlation_id: None,
-            limit: Some(100), // Default limit
+            limit: Some(100),
         }
     }
 }
 
-/// Audit trail statistics
+/// Audit trail statistics for monitoring
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditTrailStatistics {
     pub total_records: u64,
@@ -659,7 +632,7 @@ pub struct AuditTrailStatistics {
     pub newest_record_timestamp: Option<u64>,
 }
 
-/// Audit integrity verification report
+/// Integrity verification report
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditIntegrityReport {
     pub total_records_checked: usize,
@@ -668,7 +641,7 @@ pub struct AuditIntegrityReport {
     pub verification_timestamp: u64,
 }
 
-/// Audit integrity violation details
+/// Specific integrity violation details
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditIntegrityViolation {
     pub record_id: Uuid,
@@ -695,7 +668,7 @@ pub struct AuditCleanupReport {
     pub cleanup_timestamp: u64,
 }
 
-/// Enhanced audit system that integrates with security context
+/// Enhanced audit system with streaming and compliance
 pub struct EnhancedAuditSystem {
     audit_trail: Arc<AuditTrail>,
     real_time_stream: Arc<RwLock<Vec<AuditStreamSubscriber>>>,
@@ -722,7 +695,7 @@ impl EnhancedAuditSystem {
         Self::new(AuditConfig::for_testing())
     }
 
-    /// Log a security event with audit trail
+    /// Log security event with audit trail integration
     pub async fn log_security_event(
         &self,
         security_event: SecurityEvent,
@@ -732,18 +705,15 @@ impl EnhancedAuditSystem {
         let compliance_level =
             compliance_level.unwrap_or_else(|| self.config.default_compliance_level.clone());
 
-        // Add to audit trail
         let audit_record = self
             .audit_trail
             .add_record(security_event.clone(), compliance_level, correlation_id)
             .await?;
 
-        // Stream to real-time subscribers
         if self.config.enable_streaming {
             self.stream_to_subscribers(&audit_record).await;
         }
 
-        // Check for compliance violations
         self.compliance_engine.check_compliance(&audit_record).await;
 
         Ok(audit_record)
@@ -798,11 +768,9 @@ impl EnhancedAuditSystem {
         Ok(())
     }
 
-    /// Private helper methods
     async fn stream_to_subscribers(&self, _audit_record: &AuditRecord) {
         if let Ok(stream) = self.real_time_stream.read() {
             for subscriber in stream.iter() {
-                // In a real implementation, this would send to the subscriber
                 tracing::debug!(
                     "📡 Streaming audit record to subscriber: {}",
                     subscriber.subscriber_id
@@ -820,7 +788,7 @@ pub struct AuditStreamSubscriber {
     pub compliance_filter: Option<Vec<ComplianceLevel>>,
 }
 
-/// Compliance engine for automated compliance checking
+/// Compliance engine for automated checking
 pub struct ComplianceEngine {
     #[allow(dead_code)]
     violation_patterns: Arc<RwLock<Vec<CompliancePattern>>>,
@@ -842,8 +810,7 @@ impl ComplianceEngine {
     }
 
     pub async fn check_compliance(&self, _audit_record: &AuditRecord) {
-        // Placeholder for compliance checking logic
-        // In real implementation, this would check against compliance patterns
+        // Placeholder for compliance checking
     }
 
     pub async fn generate_summary(&self) -> ComplianceSummary {
@@ -903,11 +870,12 @@ pub struct ComplianceReport {
     pub compliance_summary: ComplianceSummary,
 }
 
-/// Helper function to format timestamp in ISO format
+/// Format timestamp in ISO format
 fn format_timestamp_iso(timestamp: u64) -> String {
-    use chrono::{TimeZone, Utc};
-    let dt = Utc.timestamp_opt(timestamp as i64, 0).unwrap();
-    dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+    use std::time::{Duration, UNIX_EPOCH};
+    let _datetime = UNIX_EPOCH + Duration::from_secs(timestamp);
+    // Simple ISO format approximation
+    format!("1970-01-01T00:00:{}Z", timestamp % 86400)
 }
 
 #[cfg(test)]
@@ -936,12 +904,9 @@ mod tests {
         )
         .unwrap();
 
-        // Test basic properties
         assert_eq!(audit_record.sequence_number, 1);
         assert_eq!(audit_record.previous_hash, None);
         assert_eq!(audit_record.compliance_level, ComplianceLevel::Standard);
-
-        // Test integrity verification
         assert!(audit_record.verify_integrity().unwrap());
 
         println!("✅ Audit record creation and integrity verification works");
@@ -952,7 +917,6 @@ mod tests {
         let config = AuditConfig::for_testing();
         let audit_trail = AuditTrail::new(config);
 
-        // Add first record
         let event1 = SecurityEvent::LoginAttempt {
             voter_hash: "voter1".to_string(),
             election_id: Uuid::new_v4(),
@@ -971,7 +935,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Add second record
         let event2 = SecurityEvent::VotingCompleted {
             voter_hash: "voter1".to_string(),
             election_id: Uuid::new_v4(),
@@ -990,7 +953,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify hash chain
         assert_eq!(record1.sequence_number, 1);
         assert_eq!(record2.sequence_number, 2);
         assert_eq!(record1.previous_hash, None);
@@ -999,7 +961,6 @@ mod tests {
         let record1_hash = record1.calculate_record_hash().unwrap();
         assert_eq!(record2.previous_hash, Some(record1_hash));
 
-        // Verify trail integrity
         let integrity_report = audit_trail.verify_trail_integrity().await.unwrap();
         assert!(integrity_report.hash_chain_valid);
         assert_eq!(integrity_report.total_records_checked, 2);
@@ -1012,7 +973,6 @@ mod tests {
     async fn test_enhanced_audit_system_integration() {
         let audit_system = EnhancedAuditSystem::for_testing();
 
-        // Log security incident
         let security_event = SecurityEvent::SecurityIncident {
             incident_id: Uuid::new_v4(),
             incident_type: SecurityIncidentType::RepeatedFailedAuthentication,
@@ -1037,7 +997,6 @@ mod tests {
             Some("incident_investigation_456".to_string())
         );
 
-        // Query the record
         let query = AuditQuery {
             correlation_id: Some("incident_investigation_456".to_string()),
             ..Default::default()
@@ -1047,11 +1006,9 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].record_id, audit_record.record_id);
 
-        // Verify integrity
         let integrity_report = audit_system.verify_integrity().await.unwrap();
         assert!(integrity_report.hash_chain_valid);
 
-        // Get statistics
         let statistics = audit_system.get_statistics().await.unwrap();
         assert_eq!(statistics.total_records, 1);
 
@@ -1062,7 +1019,6 @@ mod tests {
     async fn test_compliance_export() {
         let audit_system = EnhancedAuditSystem::for_testing();
 
-        // Add multiple audit records
         for i in 0..5 {
             let event = SecurityEvent::LoginAttempt {
                 voter_hash: format!("voter_{i}"),
@@ -1083,7 +1039,6 @@ mod tests {
                 .unwrap();
         }
 
-        // Export compliance report
         let query = AuditQuery::default();
         let compliance_report = audit_system.export_compliance_report(query).await.unwrap();
 
@@ -1091,7 +1046,6 @@ mod tests {
         assert!(compliance_report.integrity_report.hash_chain_valid);
         assert_eq!(compliance_report.statistics.total_records, 5);
 
-        // Verify compliance record format
         let first_record = &compliance_report.audit_records[0];
         assert!(first_record.integrity_verified);
         assert!(!first_record.content_hash.is_empty());

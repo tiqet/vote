@@ -8,13 +8,52 @@
 //! - Integration with all existing security components
 //! - Banking-grade automated countermeasures
 //!
-//! Key Features:
-//! - Multi-vector attack correlation and analysis
-//! - Automated response orchestration with escalation paths
-//! - Behavioral pattern analysis and anomaly detection
-//! - Incident documentation and evidence preservation
-//! - Compliance-ready reporting and audit integration
-//! - Real-time threat mitigation and countermeasures
+//! ## Architecture Overview
+//!
+//! The incident management system follows a pipeline architecture:
+//!
+//! ```text
+//! Security Events → Pattern Correlation → Incident Creation → Response Orchestration
+//!      ↓                    ↓                   ↓                    ↓
+//! Auth Patterns    Detected Patterns    Security Incidents    Automated Responses
+//! DoS Patterns     Correlation Rules    Escalation Rules     Response History
+//! Timing Data      Pattern History      Incident Storage     Execution Queue
+//! ```
+//!
+//! ## Key Components
+//!
+//! - **PatternCorrelator**: Analyzes security events to detect attack patterns
+//! - **EscalationEngine**: Determines appropriate responses based on incident severity
+//! - **ResponseOrchestrator**: Executes automated countermeasures
+//! - **SecurityIncidentManager**: Orchestrates the entire incident lifecycle
+//!
+//! ## Usage Example
+//!
+//! ```rust,no_run
+//! use std::sync::Arc;
+//!
+//! use vote::crypto::{EnhancedAuditSystem, SecureSaltManager, SecurityContext, SecurityIncidentManager, SecurityPerformanceMonitor, VotingLockService, VotingTokenService};
+//!
+//! async fn incident_analysis() -> Result<(), Box<dyn std::error::Error>> {
+//!     let manager = SecurityIncidentManager::for_testing();
+//!     let perf_monitor = SecurityPerformanceMonitor::for_testing();
+//!     let audit_system = EnhancedAuditSystem::for_testing();
+//!
+//!     let salt_manager = Arc::new(SecureSaltManager::for_testing());
+//!     let token_service = Arc::new(VotingTokenService::for_testing());
+//!     let lock_service = VotingLockService::new(token_service.clone());
+//!     let security_context = SecurityContext::for_testing(
+//!         salt_manager, token_service, Arc::new(lock_service)
+//!     );
+//!
+//!     let report = manager.analyze_and_respond(
+//!         &perf_monitor, &audit_system, &security_context
+//!     ).await?;
+//!
+//!     println!("Analyzed {} patterns", report.patterns_analyzed);
+//!     Ok(())
+//! }
+//! ```
 
 use crate::crypto::{
     AuthenticationPattern, DoSPattern, EnhancedAuditSystem, SecurityContext, SecurityLevel,
@@ -27,13 +66,18 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-/// Maximum incidents to keep in active memory
+/// Maximum incidents to keep in active memory to prevent memory exhaustion
+/// This limit ensures the system remains performant under sustained attack
 const MAX_ACTIVE_INCIDENTS: usize = 1000;
 
 /// Maximum correlation window for pattern analysis (seconds)
+/// Events outside this window are not correlated to prevent false positives
+/// from unrelated historical events. 1 hour provides good attack detection
+/// while maintaining reasonable memory usage.
 const CORRELATION_WINDOW_SECONDS: u64 = 3600; // 1 hour
 
 /// Incident severity escalation thresholds
+/// These thresholds determine when automated responses escalate to human intervention
 const CRITICAL_INCIDENT_THRESHOLD: f64 = 0.9;
 
 #[allow(dead_code)]
@@ -43,6 +87,25 @@ const HIGH_INCIDENT_THRESHOLD: f64 = 0.7;
 const MEDIUM_INCIDENT_THRESHOLD: f64 = 0.4;
 
 /// Comprehensive security incident with automated management
+///
+/// Represents a security event that requires tracking and potential response.
+/// Incidents progress through a defined lifecycle: Detected → Analyzing →
+/// Responding → Contained → Resolved → Closed.
+///
+/// # Threat Score Calculation
+///
+/// The threat score (0.0 to 1.0) is calculated based on:
+/// - Initial pattern confidence
+/// - Number of automated responses executed
+/// - Incident duration
+/// - Evidence volume
+///
+/// # Escalation Triggers
+///
+/// Human intervention is triggered when:
+/// - Threat escalation score > 0.9
+/// - More than 5 automated responses executed
+/// - Incident classified as Critical severity
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityIncident {
     /// Unique incident identifier
@@ -167,7 +230,21 @@ impl SecurityIncident {
             .as_secs();
     }
 
-    /// Calculate threat escalation score
+    /// Calculate threat escalation score based on multiple factors
+    ///
+    /// The escalation score determines when human intervention is required.
+    /// Factors considered:
+    /// - Base threat score from pattern analysis
+    /// - Response escalation: +0.1 per response (max +0.3)
+    /// - Duration escalation: +0.05 per hour (max +0.2)
+    /// - Evidence escalation: +0.02 per evidence item (max +0.15)
+    ///
+    /// # Returns
+    ///
+    /// Escalation score clamped to [0.0, 1.0] where:
+    /// - 0.0-0.6: Automated handling sufficient
+    /// - 0.6-0.9: Enhanced monitoring required
+    /// - 0.9-1.0: Human intervention required
     pub fn calculate_threat_escalation(&self) -> f64 {
         let mut score = self.threat_score;
 
@@ -194,7 +271,11 @@ impl SecurityIncident {
     }
 }
 
-/// Types of security incidents
+/// Types of security incidents with specific attack characteristics
+///
+/// Each incident type captures specific attack patterns and provides
+/// context for appropriate automated responses. The incident type
+/// directly influences the initial severity assessment and response selection.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum IncidentType {
     // Authentication-based incidents
@@ -264,17 +345,26 @@ pub enum IncidentType {
     },
 }
 
-/// Incident severity levels
+/// Incident severity levels with automatic classification
+///
+/// Severity is automatically determined based on incident type and characteristics.
+/// Higher severity incidents receive more aggressive automated responses and
+/// faster escalation to human intervention.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IncidentSeverity {
-    Low,
-    Medium,
-    High,
-    Critical,
-    Emergency,
+    Low,       // Monitoring and basic rate limiting
+    Medium,    // Enhanced monitoring and moderate responses
+    High,      // Aggressive responses and escalated monitoring
+    Critical,  // Emergency responses and immediate alerting
+    Emergency, // Maximum responses and human intervention
 }
 
 impl IncidentSeverity {
+    /// Automatically determine severity from incident type characteristics
+    ///
+    /// Uses predefined thresholds and attack characteristics to classify
+    /// incident severity. This drives the initial response selection and
+    /// escalation timing.
     fn from_incident_type(incident_type: &IncidentType) -> Self {
         match incident_type {
             IncidentType::BruteForceAttack {
@@ -318,7 +408,7 @@ impl IncidentSeverity {
     }
 }
 
-/// Current status of an incident
+/// Current status of an incident through its lifecycle
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum IncidentStatus {
     Detected,   // Initial detection
@@ -340,7 +430,11 @@ pub enum AffectedEntity {
     Unknown,
 }
 
-/// Evidence collected for an incident
+/// Evidence collected for an incident with forensic capabilities
+///
+/// Evidence is automatically collected from multiple sources and preserved
+/// for compliance and forensic analysis. All evidence includes timestamps
+/// and integrity verification for audit purposes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncidentEvidence {
     pub security_events: Vec<Uuid>,
@@ -469,7 +563,10 @@ impl ComplianceMetadata {
     }
 }
 
-/// Automated response actions
+/// Automated response actions with execution tracking
+///
+/// Each response includes execution metadata and effectiveness scoring
+/// to improve future response selection through machine learning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AutomatedResponse {
     pub response_id: Uuid,
@@ -496,7 +593,10 @@ impl AutomatedResponse {
     }
 }
 
-/// Types of automated responses
+/// Types of automated responses with specific parameters
+///
+/// Each response type includes the necessary parameters for execution
+/// and is designed to be non-destructive and reversible where possible.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResponseType {
     // Rate limiting responses
@@ -587,6 +687,10 @@ pub enum ResponseResult {
 }
 
 /// Pattern correlator for detecting complex attack patterns
+///
+/// Analyzes security events across time windows to identify coordinated
+/// attacks, persistent threats, and sophisticated attack campaigns that
+/// single-event detection would miss.
 pub struct PatternCorrelator {
     // Pattern detection state
     #[allow(dead_code)]
@@ -612,6 +716,10 @@ impl PatternCorrelator {
     }
 
     /// Analyze patterns and detect potential incidents
+    ///
+    /// Performs comprehensive pattern analysis across authentication,
+    /// DoS detection, and timing attack vectors. Returns detected
+    /// patterns that exceed confidence thresholds for incident creation.
     pub async fn analyze_patterns(
         &self,
         performance_monitor: &SecurityPerformanceMonitor,
@@ -797,6 +905,10 @@ struct CorrelationRule {
 }
 
 /// Escalation engine for determining appropriate responses
+///
+/// Uses rule-based logic to select automated responses based on
+/// incident characteristics, severity, and historical effectiveness.
+/// Prevents response loops and escalates to human intervention when needed.
 pub struct EscalationEngine {
     #[allow(dead_code)]
     escalation_rules: Arc<RwLock<Vec<EscalationRule>>>,
@@ -819,6 +931,10 @@ impl EscalationEngine {
     }
 
     /// Determine appropriate responses for an incident
+    ///
+    /// Selects automated responses based on incident type, severity,
+    /// and affected entities. Includes escalation logic to prevent
+    /// response loops and ensure proportional responses.
     pub async fn determine_responses(
         &self,
         incident: &SecurityIncident,
@@ -949,6 +1065,10 @@ struct EscalationRule {
 }
 
 /// Response orchestrator for executing automated responses
+///
+/// Manages the execution queue and tracks response effectiveness
+/// for continuous improvement of automated response selection.
+/// Includes rollback capabilities for destructive responses.
 pub struct ResponseOrchestrator {
     #[allow(dead_code)]
     execution_queue: Arc<Mutex<VecDeque<(Uuid, ResponseType)>>>,
@@ -969,7 +1089,11 @@ impl ResponseOrchestrator {
         }
     }
 
-    /// Execute automated response
+    /// Execute automated response with comprehensive logging
+    ///
+    /// Executes the specified response type with proper error handling,
+    /// logging, and effectiveness tracking. All responses are designed
+    /// to be non-destructive and include rollback mechanisms where appropriate.
     pub async fn execute_response(
         &self,
         incident_id: Uuid,
@@ -1121,7 +1245,39 @@ impl ResponseOrchestrator {
     }
 }
 
-/// Main security incident manager
+/// Main security incident manager coordinating all incident management components
+///
+/// Orchestrates the complete incident management lifecycle from pattern detection
+/// through automated response execution. Provides comprehensive reporting and
+/// maintains incident statistics for system health monitoring.
+///
+/// # Usage
+///
+/// ```rust,no_run
+/// use std::sync::Arc;///
+///
+/// use vote::crypto::{EnhancedAuditSystem, SecureSaltManager, SecurityContext, SecurityIncidentManager, SecurityPerformanceMonitor, VotingLockService, VotingTokenService};
+///
+/// async fn example() -> Result<(), Box<dyn std::error::Error>> {
+///     let manager = SecurityIncidentManager::for_testing();
+///     let perf_monitor = SecurityPerformanceMonitor::for_testing();
+///     let audit_system = EnhancedAuditSystem::for_testing();
+///
+///     let salt_manager = Arc::new(SecureSaltManager::for_testing());
+///     let token_service = Arc::new(VotingTokenService::for_testing());
+///     let lock_service = VotingLockService::new(token_service.clone());
+///     let security_context = SecurityContext::for_testing(
+///         salt_manager, token_service, Arc::new(lock_service)
+///     );
+///
+///     let report = manager.analyze_and_respond(
+///         &perf_monitor, &audit_system, &security_context
+///     ).await?;
+///     let incidents = manager.get_active_incidents().await?;
+///     println!("Found {} incidents", incidents.len());
+///     Ok(())
+/// }
+/// ```
 pub struct SecurityIncidentManager {
     // Core components
     pattern_correlator: Arc<PatternCorrelator>,
@@ -1164,6 +1320,14 @@ impl SecurityIncidentManager {
     }
 
     /// Analyze security systems and detect incidents
+    ///
+    /// Performs comprehensive security analysis across all monitored systems:
+    /// 1. Pattern correlation and detection
+    /// 2. Incident creation or updates
+    /// 3. Automated response selection and execution
+    /// 4. Statistics and health impact calculation
+    ///
+    /// Returns detailed analysis report for monitoring and alerting.
     pub async fn analyze_and_respond(
         &self,
         performance_monitor: &SecurityPerformanceMonitor,
@@ -1432,7 +1596,10 @@ impl SecurityIncidentManager {
     }
 }
 
-/// Incident analysis report
+/// Incident analysis report providing comprehensive analysis results
+///
+/// Contains metrics and statistics from each analysis cycle for
+/// monitoring system health and response effectiveness.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncidentAnalysisReport {
     pub analysis_timestamp: u64,
@@ -1444,7 +1611,7 @@ pub struct IncidentAnalysisReport {
     pub system_health_impact: f64,
 }
 
-/// Incident statistics
+/// Incident statistics for monitoring and reporting
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IncidentStatistics {
     pub total_incidents: u64,
@@ -1457,7 +1624,11 @@ pub struct IncidentStatistics {
     pub last_analysis: Option<u64>,
 }
 
-/// Configuration for incident management
+/// Configuration for incident management with reasonable defaults
+///
+/// Provides tunable parameters for different deployment environments
+/// and security requirements. Testing configuration reduces thresholds
+/// and timeouts for faster test execution.
 #[derive(Debug, Clone)]
 pub struct IncidentManagementConfig {
     pub correlation_window_seconds: u64,

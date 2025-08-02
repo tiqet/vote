@@ -1,14 +1,67 @@
-//! Security hardening for banking-grade cryptographic operations
+//! Banking-Grade Cryptographic Security Hardening
 //!
-//! Enhanced with comprehensive token validation and management for millions of users
+//! This module provides comprehensive cryptographic security for voting systems with
+//! protection against timing attacks, replay attacks, and memory-based attacks.
 //!
-//! SECURITY FEATURES:
-//! - Timing attack resistance using constant-time operations
-//! - Replay attack prevention with timestamp validation
-//! - Cryptographic token generation and validation
-//! - Secure random generation and memory operations
-//! - Banking-grade cryptographic primitives (Ed25519 + Blake3)
-//! - **ENHANCED: Secure memory clearing and management**
+//! ## Security Architecture
+//!
+//! ```text
+//! SecureSaltManager ──┬── Voter Identity Hashing (deterministic)
+//!                     ├── Token Generation (nonce-based)
+//!                     └── Token Validation (constant-time)
+//!
+//! SecureKeyPair ─────┬── Ed25519 Signing (timestamp-protected)
+//!                    └── Signature Verification (replay-resistant)
+//!
+//! SecureMemory ──────┬── Constant-Time Operations
+//!                    ├── Secure Memory Clearing
+//!                    └── Timing-Attack Prevention
+//! ```
+//!
+//! ## Core Security Features
+//!
+//! - **Timing Attack Resistance**: All cryptographic operations use constant-time algorithms
+//! - **Memory Protection**: Automatic secure memory clearing with multiple defense layers
+//! - **Replay Protection**: Timestamp-based validation prevents replay attacks
+//! - **Rate Limiting**: Prevents brute force and timing attack attempts
+//! - **Deterministic Hashing**: Same voter always gets same hash (timestamp for replay only)
+//!
+//! ## Quick Start
+//!
+//! ```rust,no_run
+//! use uuid::Uuid;
+//!
+//! use vote::crypto::SecureSaltManager;
+//!
+//! async fn secure_voting_example() -> Result<(), Box<dyn std::error::Error>> {
+//!     // Initialize salt manager
+//!     let salt_manager = SecureSaltManager::for_testing();
+//!
+//!     // Generate voter hash (deterministic)
+//!     let bank_id = "CZ1234567890";
+//!     let election_id = Uuid::new_v4();
+//!     let timestamp = std::time::SystemTime::now()
+//!         .duration_since(std::time::UNIX_EPOCH)?.as_secs();
+//!
+//!     let voter_hash = salt_manager.hash_voter_identity_secure(
+//!         bank_id, &election_id, timestamp, 300
+//!     )?;
+//!
+//!     // Generate secure voting token
+//!     let expires_at = timestamp + 3600; // 1 hour
+//!     let (token_hash, nonce) = salt_manager.generate_voting_token_secure(
+//!         &voter_hash, &election_id, expires_at
+//!     )?;
+//!
+//!     // Validate token (constant-time)
+//!     let is_valid = salt_manager.validate_voting_token_secure(
+//!         &token_hash, &nonce, &voter_hash, &election_id, expires_at, timestamp
+//!     )?;
+//!
+//!     println!("Token valid: {}", is_valid);
+//!     Ok(())
+//! }
+//! ```
 
 use crate::{Result, crypto_error};
 use ed25519_dalek::{Signature as Ed25519Signature, Signer, SigningKey, Verifier, VerifyingKey};
@@ -20,7 +73,30 @@ use uuid::Uuid;
 
 /// Secure buffer for sensitive data with automatic memory clearing
 ///
-/// SECURITY: Provides automatic secure memory clearing on drop
+/// Provides automatic secure memory clearing on drop using multiple defense techniques:
+/// - Volatile writes to prevent compiler optimization
+/// - Random XOR passes to prevent memory recovery
+/// - Memory barriers to ensure completion
+///
+/// # Security
+///
+/// All sensitive data is automatically cleared when the buffer goes out of scope.
+/// Manual clearing is also available via `secure_clear()`.
+///
+/// # Example
+///
+/// ```rust
+/// use vote::crypto::secure::SecureBuffer;
+///
+///  async fn secure_buffer_example() -> Result<(), Box<dyn std::error::Error>> {
+///     let mut buffer = SecureBuffer::new(32);
+///     // Use buffer for sensitive operations
+///     buffer.secure_clear(); // Optional manual clearing
+///     // Automatic clearing on drop
+///     println!("SecureBuffer operations completed");
+///     Ok(())
+/// }
+/// ```
 pub struct SecureBuffer {
     data: Vec<u8>,
 }
@@ -80,9 +156,51 @@ impl Clone for SecureBuffer {
     }
 }
 
-/// Secure salt manager with enhanced token operations
+/// Secure salt manager for voter identity and token operations
 ///
-/// SECURITY: Provides cryptographically secure salt management with timing attack resistance
+/// Provides cryptographically secure salt management with timing attack resistance.
+/// The salt manager handles two critical operations:
+/// 1. **Voter Identity Hashing**: Deterministic hashing for consistent voter identification
+/// 2. **Token Operations**: Generation and validation of voting tokens with nonce-based security
+///
+/// # Security Features
+///
+/// - **Deterministic Hashing**: Same voter always gets same hash (timestamp only for replay protection)
+/// - **Constant-Time Validation**: All token validation uses constant-time operations
+/// - **Cryptographically Secure**: Uses Blake3 keyed hashing and secure random nonces
+/// - **Memory Protection**: All sensitive data automatically cleared
+///
+/// # Production Setup
+///
+/// ```bash
+/// export CRYPTO_VOTER_SALT="$(openssl rand -base64 32)"
+/// export CRYPTO_TOKEN_SALT="$(openssl rand -base64 32)"
+/// ```
+///
+/// # Example
+///
+/// ```rust
+/// use uuid::Uuid;
+/// use vote::crypto::SecureSaltManager;
+///
+/// let salt_manager = SecureSaltManager::for_testing();
+/// let bank_id = "CZ1234567890";
+/// let election_id = Uuid::new_v4();
+/// let timestamp = std::time::SystemTime::now()
+///         .duration_since(std::time::UNIX_EPOCH)?.as_secs();
+///
+/// // Generate deterministic voter hash
+/// let voter_hash = salt_manager.hash_voter_identity_secure(
+///     bank_id, &election_id, timestamp, 300
+/// )?;
+///
+/// // Generate secure token
+/// let expires_at = timestamp + 3600;
+/// let (token, nonce) = salt_manager.generate_voting_token_secure(
+///     &voter_hash, &election_id, expires_at
+/// )?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[derive(Clone)]
 pub struct SecureSaltManager {
     voter_salt: SecureBuffer,
@@ -93,10 +211,13 @@ impl SecureSaltManager {
     /// Create salt manager from environment variables
     ///
     /// **CRITICAL**: These must be set in production:
-    /// - CRYPTO_VOTER_SALT (minimum 32 bytes, base64 encoded)
-    /// - CRYPTO_TOKEN_SALT (minimum 32 bytes, base64 encoded)
+    /// - `CRYPTO_VOTER_SALT` (minimum 32 bytes, base64 encoded)
+    /// - `CRYPTO_TOKEN_SALT` (minimum 32 bytes, base64 encoded)
     ///
-    /// SECURITY: Environment-based salts prevent hardcoded secrets
+    /// # Security
+    ///
+    /// Environment-based salts prevent hardcoded secrets and enable proper
+    /// key rotation in production environments.
     pub fn from_env() -> Result<Self> {
         let voter_salt = std::env::var("CRYPTO_VOTER_SALT")
             .map_err(|_| crypto_error!("CRYPTO_VOTER_SALT environment variable required"))?;
@@ -130,7 +251,8 @@ impl SecureSaltManager {
 
     /// Create for testing with secure random salts
     ///
-    /// SECURITY: Generates cryptographically secure random salts for testing
+    /// Generates cryptographically secure random salts for testing and development.
+    /// **Do not use in production** - use `from_env()` instead.
     pub fn for_testing() -> Self {
         let mut rng = rand::thread_rng();
 
@@ -146,15 +268,34 @@ impl SecureSaltManager {
         }
     }
 
-    /// Generate voter hash with timestamp for replay protection (deterministic)
+    /// Generate deterministic voter hash with replay protection
     ///
-    /// SECURITY: This function is hardened against timing attacks by:
-    /// - Always performing the full cryptographic computation
-    /// - Using constant-time timestamp validation
-    /// - Preventing timing oracles through consistent execution paths
+    /// Creates a deterministic hash for voter identification that's consistent across
+    /// sessions while providing replay attack protection via timestamp validation.
     ///
-    /// DETERMINISTIC: Same voter always gets same hash regardless of timestamp
-    /// (timestamp only used for replay protection, not hash generation)
+    /// # Security Features
+    ///
+    /// - **Timing Attack Resistant**: Always performs full computation regardless of timestamp validity
+    /// - **Constant-Time Validation**: Uses constant-time timestamp comparison
+    /// - **Deterministic**: Same voter always gets same hash (timestamp not included in hash)
+    /// - **Replay Protection**: Timestamp validation prevents replay attacks
+    ///
+    /// # Arguments
+    ///
+    /// * `bank_id` - Bank identifier for voter
+    /// * `election_id` - Election UUID for context
+    /// * `timestamp` - Request timestamp for replay protection
+    /// * `max_age_seconds` - Maximum allowed age of timestamp
+    ///
+    /// # Returns
+    ///
+    /// 32-byte deterministic voter hash if timestamp is valid
+    ///
+    /// # Security
+    ///
+    /// The hash is deterministic (same inputs always produce same output) but
+    /// the timestamp provides replay protection. This ensures consistent voter
+    /// identification while preventing replay attacks.
     pub fn hash_voter_identity_secure(
         &self,
         bank_id: &str,
@@ -191,7 +332,18 @@ impl SecureSaltManager {
 
     /// Generate secure voting token with expiration
     ///
-    /// SECURITY: Uses cryptographically secure random nonce and keyed hashing
+    /// Creates a cryptographically secure voting token using Blake3 keyed hashing
+    /// with a random nonce for uniqueness and security.
+    ///
+    /// # Security
+    ///
+    /// - Uses cryptographically secure random nonce (16 bytes)
+    /// - Blake3 keyed hashing with dedicated token salt
+    /// - Binds token to voter, election, and expiration time
+    ///
+    /// # Returns
+    ///
+    /// Tuple of (token_hash, nonce) - both needed for validation
     pub fn generate_voting_token_secure(
         &self,
         voter_hash: &[u8; 32],
@@ -215,15 +367,30 @@ impl SecureSaltManager {
         Ok((token_hash, nonce))
     }
 
-    /// Validate a voting token by regenerating and comparing
+    /// Validate voting token with constant-time security
     ///
-    /// SECURITY: This function is hardened against timing attacks by:
-    /// - Always performing the full cryptographic computation
-    /// - Using constant-time comparisons for all checks
-    /// - Avoiding early returns that create timing oracles
-    /// - Ensuring consistent execution time regardless of validity
+    /// Validates a voting token by regenerating it and performing constant-time comparison.
+    /// This is the critical security function that prevents token forgery.
     ///
-    /// This is the critical security function that prevents token forgery
+    /// # Security Features
+    ///
+    /// - **Always Computes**: Performs full cryptographic computation regardless of expiration
+    /// - **Constant-Time**: All comparisons use constant-time operations
+    /// - **No Early Returns**: Prevents timing oracles from validation flow
+    /// - **Consistent Timing**: Same execution time regardless of token validity
+    ///
+    /// # Arguments
+    ///
+    /// * `provided_token_hash` - Token hash to validate
+    /// * `nonce` - Random nonce from token generation
+    /// * `voter_hash` - Voter's deterministic hash
+    /// * `election_id` - Election context
+    /// * `expires_at` - Token expiration timestamp
+    /// * `current_timestamp` - Current time for expiration check
+    ///
+    /// # Returns
+    ///
+    /// `true` if token is valid and not expired, `false` otherwise
     pub fn validate_voting_token_secure(
         &self,
         provided_token_hash: &[u8; 32],
@@ -258,9 +425,9 @@ impl SecureSaltManager {
         Ok(token_valid.into())
     }
 
-    /// Generate a secure session token (for user sessions, not voting)
+    /// Generate secure session token for user sessions (not voting)
     ///
-    /// SECURITY: Provides cryptographically secure session tokens with timestamp binding
+    /// Creates session tokens for general user authentication (separate from voting tokens).
     pub fn generate_session_token(&self) -> Result<([u8; 32], u64)> {
         let mut session_data = SecureBuffer::new(32);
         let mut rng = rand::thread_rng();
@@ -283,9 +450,7 @@ impl SecureSaltManager {
         Ok((session_token, timestamp))
     }
 
-    /// Validate voter hash format
-    ///
-    /// SECURITY: Ensures voter hash meets security requirements
+    /// Validate voter hash format for security compliance
     pub fn validate_voter_hash_format(&self, voter_hash: &str) -> Result<[u8; 32]> {
         let decoded =
             hex::decode(voter_hash).map_err(|_| crypto_error!("Invalid voter hash hex format"))?;
@@ -300,9 +465,35 @@ impl SecureSaltManager {
     }
 }
 
-/// Memory-safe cryptographic key pair with enhanced memory protection
+/// Cryptographic key pair with enhanced memory protection and expiration
 ///
-/// SECURITY: Provides secure key management with expiration and memory protection
+/// Provides Ed25519 digital signatures with automatic memory clearing and
+/// timestamp-based replay protection.
+///
+/// # Security Features
+///
+/// - **Ed25519 Signatures**: Industry-standard elliptic curve cryptography
+/// - **Memory Protection**: Automatic secure clearing of sensitive key material
+/// - **Timestamp Binding**: All signatures include timestamps for replay protection
+/// - **Expiration Support**: Keys can be configured to expire automatically
+/// - **Secure Debug**: Debug output never exposes private key material
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use vote::crypto::SecureKeyPair;
+///
+///  async fn key_pair_example() -> Result<(), Box<dyn std::error::Error>> {
+///     let key_pair = SecureKeyPair::generate_with_expiration(Some(3600))?; // 1 hour
+///     let message = b"secure voting data";
+///     let (signature, timestamp) = key_pair.sign_with_timestamp(message)?;
+///
+///     // Verify with 5-minute tolerance
+///     key_pair.verify_with_timestamp(message, &signature, timestamp, 300)?;
+///     println!("Signature verified successfully");
+///     Ok(())
+/// }
+/// ```
 #[derive(Clone)]
 pub struct SecureKeyPair {
     signing_key: SigningKey,
@@ -355,9 +546,13 @@ impl Drop for SecureKeyPair {
 }
 
 impl SecureKeyPair {
-    /// Generate new key pair with expiration and enhanced memory protection
+    /// Generate new key pair with optional expiration
     ///
-    /// SECURITY: Creates cryptographically secure Ed25519 key pair with memory protection
+    /// Creates a cryptographically secure Ed25519 key pair with enhanced memory protection.
+    ///
+    /// # Arguments
+    ///
+    /// * `expires_in_seconds` - Optional expiration time (None for no expiration)
     pub fn generate_with_expiration(expires_in_seconds: Option<u64>) -> Result<Self> {
         let mut rng = rand::thread_rng();
         let signing_key = SigningKey::generate(&mut rng);
@@ -395,14 +590,23 @@ impl SecureKeyPair {
         }
     }
 
-    /// Get public key
+    /// Get public key bytes
     pub fn public_key(&self) -> [u8; 32] {
         self.verifying_key.to_bytes()
     }
 
-    /// Sign message with timestamp and anti-replay protection
+    /// Sign message with timestamp for replay protection
     ///
-    /// SECURITY: Includes timestamp in signature to prevent replay attacks
+    /// Creates a digital signature that includes the current timestamp to prevent replay attacks.
+    ///
+    /// # Security
+    ///
+    /// The timestamp is bound to the signature, making each signature unique even for
+    /// identical messages. This prevents replay attacks while maintaining signature verification.
+    ///
+    /// # Returns
+    ///
+    /// Tuple of (signature_bytes, timestamp) - both needed for verification
     pub fn sign_with_timestamp(&self, message: &[u8]) -> Result<([u8; 64], u64)> {
         if self.is_expired() {
             return Err(crypto_error!("Key pair has expired"));
@@ -426,7 +630,14 @@ impl SecureKeyPair {
 
     /// Verify signature with timestamp validation
     ///
-    /// SECURITY: Validates both cryptographic signature and timestamp freshness
+    /// Verifies both the cryptographic signature and timestamp freshness to prevent replay attacks.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - Original message that was signed
+    /// * `signature` - Signature bytes to verify
+    /// * `timestamp` - Timestamp from signing
+    /// * `max_age_seconds` - Maximum allowed age of signature
     pub fn verify_with_timestamp(
         &self,
         message: &[u8],
@@ -466,16 +677,17 @@ impl SecureKeyPair {
     }
 }
 
-/// Rate limiter for cryptographic operations
+/// Rate limiter for cryptographic operations to prevent timing attacks
 ///
-/// SECURITY: Prevents timing attacks through operation rate limiting
+/// Provides operation rate limiting to prevent brute force attacks and timing attack attempts.
+/// Maintains a sliding window of recent operations to enforce rate limits.
 pub struct CryptoRateLimiter {
     max_operations_per_second: u32,
     operations: VecDeque<u64>,
 }
 
 impl CryptoRateLimiter {
-    /// Create new rate limiter
+    /// Create new rate limiter with specified operations per second
     pub fn new(max_operations_per_second: u32) -> Self {
         Self {
             max_operations_per_second,
@@ -483,9 +695,10 @@ impl CryptoRateLimiter {
         }
     }
 
-    /// Check if operation is allowed (prevents timing attacks)
+    /// Check if operation is allowed under current rate limit
     ///
-    /// SECURITY: Rate limiting helps prevent timing attack attempts
+    /// Uses a sliding window approach to track operations and enforce rate limits.
+    /// Helps prevent timing attack attempts by limiting operation frequency.
     pub fn check_rate_limit(&mut self) -> Result<()> {
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -513,18 +726,55 @@ impl CryptoRateLimiter {
     }
 }
 
-/// Enhanced secure memory utilities with comprehensive memory protection
+/// Secure memory operations with comprehensive protection against attacks
 ///
-/// SECURITY: Provides timing-attack-resistant memory operations and secure memory management
+/// Provides timing-attack-resistant memory operations and secure memory management
+/// using multiple defense techniques for banking-grade security.
+///
+/// # Security Features
+///
+/// - **Timing Attack Resistance**: All operations use constant-time algorithms
+/// - **Memory Recovery Protection**: Multiple clearing passes with random data
+/// - **Compiler Optimization Protection**: Volatile operations and memory barriers
+/// - **Verification**: Debug assertions verify memory clearing completion
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use vote::crypto::SecureMemory;
+///
+///  async fn secure_memory_example() -> Result<(), Box<dyn std::error::Error>> {
+///     // Secure memory allocation
+///     let mut buffer = SecureMemory::secure_alloc(32);
+///
+///     // Constant-time comparison
+///     let data1 = [0x42u8; 8];
+///     let data2 = [0x42u8; 8];
+///     let equal = SecureMemory::constant_time_eq(&data1, &data2);
+///
+///     // Secure memory clearing
+///     let mut sensitive_data = vec![0x42u8; 16];
+///     SecureMemory::secure_zero(&mut sensitive_data);
+///
+///     println!("Secure memory operations completed");
+///     Ok(())
+/// }
+/// ```
 pub struct SecureMemory;
 
 impl SecureMemory {
-    /// Securely zero memory using multiple techniques for defense in depth
+    /// Securely zero memory using multiple defense techniques
     ///
-    /// SECURITY: Uses multiple techniques to prevent compiler optimization and ensure memory clearing:
+    /// Uses multiple techniques to prevent compiler optimization and ensure memory clearing:
     /// - Volatile writes to prevent optimization
+    /// - Random XOR passes to prevent memory recovery
     /// - Memory barriers to ensure completion
-    /// - Multiple passes for paranoid security
+    /// - Verification pass to confirm clearing
+    ///
+    /// # Security
+    ///
+    /// This is a paranoid implementation that uses multiple methods to ensure
+    /// sensitive data cannot be recovered from memory, even with physical access.
     pub fn secure_zero(data: &mut [u8]) {
         if data.is_empty() {
             return;
@@ -557,8 +807,6 @@ impl SecureMemory {
     }
 
     /// Securely allocate and zero a buffer
-    ///
-    /// SECURITY: Ensures buffer starts with cleared memory
     pub fn secure_alloc(size: usize) -> SecureBuffer {
         let mut buffer = SecureBuffer::new(size);
         Self::secure_zero(buffer.as_mut_slice());
@@ -566,8 +814,6 @@ impl SecureMemory {
     }
 
     /// Securely copy data with automatic source clearing
-    ///
-    /// SECURITY: Copies data and clears the source for move semantics
     pub fn secure_copy_and_clear(source: &mut [u8], dest: &mut [u8]) -> Result<()> {
         if source.len() != dest.len() {
             return Err(crypto_error!(
@@ -584,12 +830,17 @@ impl SecureMemory {
         Ok(())
     }
 
-    /// Securely compare two byte arrays in constant time
+    /// Constant-time byte array comparison
     ///
-    /// SECURITY: Uses subtle crate for guaranteed constant-time comparison
+    /// Compares two byte arrays in constant time to prevent timing attacks.
+    /// Uses the `subtle` crate for guaranteed constant-time operations.
+    ///
+    /// # Security
+    ///
     /// - Prevents length-based timing attacks
-    /// - Performs dummy operations to maintain consistent timing
+    /// - Performs dummy operations for consistent timing
     /// - No early returns that could leak information
+    /// - Both length and content comparisons are constant-time
     pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         use subtle::ConstantTimeEq;
 
@@ -612,30 +863,22 @@ impl SecureMemory {
     }
 
     /// Constant-time string comparison
-    ///
-    /// SECURITY: Prevents timing attacks on string comparisons (e.g., token IDs, voter hashes)
     pub fn constant_time_str_eq(a: &str, b: &str) -> bool {
         Self::constant_time_eq(a.as_bytes(), b.as_bytes())
     }
 
     /// Constant-time UUID comparison
-    ///
-    /// SECURITY: Prevents timing attacks on UUID comparisons (e.g., election IDs)
     pub fn constant_time_uuid_eq(a: &uuid::Uuid, b: &uuid::Uuid) -> bool {
         Self::constant_time_eq(a.as_bytes(), b.as_bytes())
     }
 
     /// Constant-time integer comparison
-    ///
-    /// SECURITY: Prevents timing attacks on timestamp/numeric comparisons
     pub fn constant_time_u64_eq(a: u64, b: u64) -> bool {
         use subtle::ConstantTimeEq;
         a.ct_eq(&b).into()
     }
 
     /// Constant-time less-than-or-equal comparison for timestamps
-    ///
-    /// SECURITY: For expiration checks without timing leakage
     pub fn constant_time_u64_le(a: u64, b: u64) -> bool {
         use subtle::ConstantTimeLess;
         // a <= b is equivalent to !(a > b) which is !(b < a)
@@ -643,9 +886,7 @@ impl SecureMemory {
         (!b_less_than_a).into()
     }
 
-    /// Generate cryptographically secure random bytes with secure clearing
-    ///
-    /// SECURITY: Uses system cryptographic random number generator
+    /// Generate cryptographically secure random bytes
     pub fn secure_random_bytes<const N: usize>() -> [u8; N] {
         let mut bytes = [0u8; N];
         use rand::RngCore;
@@ -654,8 +895,6 @@ impl SecureMemory {
     }
 
     /// Generate secure random data into a SecureBuffer
-    ///
-    /// SECURITY: Provides secure random generation with automatic memory clearing
     pub fn secure_random_buffer(size: usize) -> SecureBuffer {
         let mut buffer = SecureBuffer::new(size);
         use rand::RngCore;
@@ -663,9 +902,9 @@ impl SecureMemory {
         buffer
     }
 
-    /// Constant-time conditional move
+    /// Constant-time conditional selection
     ///
-    /// SECURITY: Moves data based on condition without timing leakage
+    /// Selects data based on condition without timing leakage.
     pub fn constant_time_select(
         condition: bool,
         if_true: &[u8],
@@ -691,8 +930,6 @@ impl SecureMemory {
     }
 
     /// Secure comparison with automatic result clearing
-    ///
-    /// SECURITY: Performs comparison and ensures intermediate data is cleared
     pub fn secure_compare_and_clear(a: &mut [u8], b: &mut [u8]) -> bool {
         let result = Self::constant_time_eq(a, b);
 
@@ -704,9 +941,10 @@ impl SecureMemory {
     }
 }
 
-/// Enhanced secure string type for sensitive text data
+/// Secure string type for sensitive text data with automatic memory clearing
 ///
-/// SECURITY: Provides secure string handling with automatic memory clearing
+/// Provides secure string handling with automatic memory clearing and
+/// constant-time comparison operations.
 pub struct SecureString {
     buffer: SecureBuffer,
 }

@@ -208,7 +208,7 @@ pub enum Error {
         /// This message is safe for logging and debugging but should not
         /// contain sensitive cryptographic material or implementation details
         /// that could aid attackers.
-        message: String
+        message: String,
     },
 
     /// Voting-specific errors
@@ -252,7 +252,7 @@ pub enum Error {
         ///
         /// This message can typically be displayed to users as it contains
         /// guidance about voting procedures and requirements.
-        message: String
+        message: String,
     },
 
     /// Validation errors
@@ -297,7 +297,7 @@ pub enum Error {
         ///
         /// Should match the field name in forms, API parameters, or
         /// data structures to enable precise error highlighting.
-        field: String
+        field: String,
     },
 
     /// Serialization errors
@@ -384,7 +384,7 @@ pub enum Error {
         ///
         /// Should provide sufficient information for administrators
         /// to diagnose and resolve the issue.
-        message: String
+        message: String,
     },
 }
 
@@ -709,7 +709,10 @@ mod tests {
     #[test]
     fn test_error_display() {
         let crypto_err = Error::crypto("signature failed");
-        assert_eq!(crypto_err.to_string(), "Cryptographic error: signature failed");
+        assert_eq!(
+            crypto_err.to_string(),
+            "Cryptographic error: signature failed"
+        );
 
         let voting_err = Error::voting("election closed");
         assert_eq!(voting_err.to_string(), "Voting error: election closed");

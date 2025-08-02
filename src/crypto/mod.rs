@@ -547,7 +547,7 @@ impl CryptoUtils {
     ///
     /// # Returns
     ///
-    /// A 32-byte Blake3 hash of the input data as a [`Hash`] type.
+    /// A 32-byte Blake3 hash of the input data as a [`type@Hash`] type.
     pub fn hash(data: &[u8]) -> Hash {
         blake3::hash(data).into()
     }
@@ -714,7 +714,7 @@ impl CryptoUtils {
     ///
     /// # Error Conditions
     ///
-    /// Returns [`Error::Crypto`] if:
+    /// Returns [`crate::Error::Crypto`] if:
     /// - Input length is not exactly 64 characters
     /// - Input contains non-hexadecimal characters
     /// - Input format is malformed
@@ -855,7 +855,7 @@ impl CryptoUtils {
     ///
     /// # Error Conditions
     ///
-    /// Returns [`Error::Crypto`] if:
+    /// Returns [`crate::Error::Crypto`] if:
     /// - Input length is not exactly 128 characters
     /// - Input contains non-hexadecimal characters
     ///

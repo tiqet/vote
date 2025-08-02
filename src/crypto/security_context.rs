@@ -1,17 +1,67 @@
 //! Unified Security Context for Banking-Grade Security Management
 //!
-//! This module provides centralized security management that ties together all
-//! security components: authentication, authorization, auditing, incident detection,
-//! and security monitoring. It serves as the single source of truth for security
-//! state and coordinates all security operations.
+//! This module provides centralized security management that coordinates all security
+//! components: authentication, authorization, auditing, incident detection, and monitoring.
 //!
-//! Key features:
-//! - Centralized security session management
-//! - Comprehensive security audit logging
-//! - Automatic security incident detection and response
-//! - Security metrics and performance monitoring
-//! - Integration with all crypto security components
-//! - Banking-grade security event correlation
+//! ## Architecture
+//!
+//! ```text
+//! SecurityContext
+//! ├── Authentication Layer (login/logout/sessions)
+//! ├── Authorization Layer (voting locks/tokens)
+//! ├── Audit System (tamper-evident logs)
+//! ├── Performance Monitor (timing attack detection)
+//! └── Incident Management (automated responses)
+//! ```
+//!
+//! ## Core Features
+//!
+//! - **Secure Login/Logout**: Rate-limited authentication with session management
+//! - **Voting Security**: Token-based voting with double-voting prevention
+//! - **Incident Detection**: Automatic security incident detection and response
+//! - **Performance Monitoring**: Real-time timing attack and DoS detection
+//! - **Audit Trail**: Tamper-evident logging for compliance
+//!
+//! ## Quick Start
+//!
+//! ```rust,no_run
+//! use std::sync::Arc;
+//! use uuid::Uuid;
+//!
+//! use vote::crypto::{SecureSaltManager, SecurityContext, SecurityLoginResult, SecurityVoteResult, VotingLockService, VotingMethod, VotingTokenService};
+//!
+//! async fn voting_example() -> Result<(), Box<dyn std::error::Error>> {
+//!     // Setup components
+//!     let salt_manager = Arc::new(SecureSaltManager::for_testing());
+//!     let token_service = Arc::new(VotingTokenService::for_testing());
+//!     let lock_service = VotingLockService::new(token_service.clone());
+//!     let security_context = SecurityContext::for_testing(
+//!         salt_manager, token_service, Arc::new(lock_service)
+//!     );
+//!
+//!     // Complete voting workflow
+//!     let bank_id = "CZ1234567890";
+//!     let election_id = Uuid::new_v4();
+//!
+//!     // 1. Login
+//!     let login = security_context.secure_login(
+//!         bank_id, &election_id, None, None
+//!     ).await?;
+//!
+//!     // 2. Vote
+//!     if let SecurityLoginResult::Success { token, .. } = login {
+//!         let vote = security_context.secure_vote(
+//!             &token.token_id, &token.voter_hash, &election_id, VotingMethod::Digital
+//!         ).await?;
+//!
+//!         // 3. Complete
+//!         if let SecurityVoteResult::LockAcquired { lock } = vote {
+//!             security_context.complete_voting(&lock, Some(Uuid::new_v4())).await?;
+//!         }
+//!     }
+//!     Ok(())
+//! }
+//! ```
 
 use crate::crypto::{
     CryptoRateLimiter, SecureSaltManager, VotingLockService, VotingTokenService,
@@ -37,7 +87,10 @@ const MAX_FAILED_ATTEMPTS: usize = 5;
 /// Time window for tracking failed attempts (seconds)
 const FAILED_ATTEMPT_WINDOW: u64 = 300; // 5 minutes
 
-/// Security event types for comprehensive auditing
+/// Security events for comprehensive auditing and incident detection
+///
+/// All security-relevant actions are captured as events for audit trails,
+/// compliance reporting, and incident correlation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SecurityEvent {
     // Authentication Events
@@ -133,7 +186,7 @@ pub enum SecurityEvent {
     },
 }
 
-/// Types of security incidents
+/// Security incident types for automated detection and response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SecurityIncidentType {
     RepeatedFailedAuthentication,
@@ -146,7 +199,7 @@ pub enum SecurityIncidentType {
     AbnormalBehaviorPattern,
 }
 
-/// Security incident severity levels
+/// Security incident severity levels driving response escalation
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SecuritySeverity {
     Low,
@@ -155,7 +208,7 @@ pub enum SecuritySeverity {
     Critical,
 }
 
-/// Active security session information
+/// Active security session with risk-based authentication state
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecuritySession {
     pub session_id: String,
@@ -170,16 +223,16 @@ pub struct SecuritySession {
     pub ip_address: Option<String>,
 }
 
-/// Security levels for risk-based authentication
+/// Risk-based security levels with automatic escalation
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum SecurityLevel {
-    Standard,
+    Standard, // Normal operation
     Elevated, // After failed attempts or suspicious activity
     High,     // Multiple security incidents
     Locked,   // Temporarily locked due to security concerns
 }
 
-/// Security metrics for monitoring and alerting
+/// Comprehensive security metrics for monitoring and alerting
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityMetrics {
     pub total_sessions: u64,
@@ -204,7 +257,7 @@ pub struct SecurityMetrics {
     pub system_security_score: f64, // 0.0 to 1.0
 }
 
-/// Recent failed attempts tracking
+/// Failed attempt tracking for incident detection
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct FailedAttempt {
@@ -213,7 +266,44 @@ struct FailedAttempt {
     reason: String,
 }
 
-/// Comprehensive security context that coordinates all security operations
+/// Main security context coordinating all security operations
+///
+/// The `SecurityContext` serves as the central security orchestrator, integrating:
+/// - Authentication and session management
+/// - Voting security and double-voting prevention
+/// - Real-time security monitoring and incident detection
+/// - Comprehensive audit logging for compliance
+/// - Performance monitoring for timing attack detection
+///
+/// ## Security Features
+///
+/// - **Rate Limiting**: Prevents brute force attacks
+/// - **Session Management**: Tracks active voting sessions
+/// - **Incident Detection**: Automatic security incident detection
+/// - **Audit Logging**: Tamper-evident audit trails
+/// - **Performance Monitoring**: Real-time attack detection
+///
+/// ## Usage
+///
+/// ```rust,no_run
+/// use std::sync::Arc;///
+///
+/// use vote::crypto::{SecureSaltManager, SecurityContext, VotingLockService, VotingTokenService};
+///
+/// async fn example() -> Result<(), Box<dyn std::error::Error>> {
+///     let salt_manager = Arc::new(SecureSaltManager::for_testing());
+///     let token_service = Arc::new(VotingTokenService::for_testing());
+///     let lock_service = VotingLockService::new(token_service.clone());
+///     let security_context = SecurityContext::for_testing(
+///         salt_manager, token_service, Arc::new(lock_service)
+///     );
+///
+///     // Use for secure voting workflow
+///     let metrics = security_context.get_security_metrics().await?;
+///     println!("Security score: {:.2}", metrics.system_security_score);
+///     Ok(())
+/// }
+/// ```
 pub struct SecurityContext {
     // Core components
     salt_manager: Arc<SecureSaltManager>,
@@ -237,7 +327,7 @@ pub struct SecurityContext {
     config: SecurityContextConfig,
 }
 
-/// Configuration for security context
+/// Configuration for security context behavior
 #[derive(Debug, Clone)]
 pub struct SecurityContextConfig {
     pub session_timeout_seconds: u64,
@@ -357,6 +447,34 @@ impl SecurityContext {
     }
 
     /// Secure login with comprehensive security tracking
+    ///
+    /// Performs secure voter authentication with:
+    /// - Rate limiting to prevent brute force attacks
+    /// - Voter identity hashing with replay protection
+    /// - Security session creation and management
+    /// - Comprehensive audit logging
+    /// - Performance monitoring and timing attack detection
+    ///
+    /// # Arguments
+    ///
+    /// * `bank_id` - Bank identifier for voter identity
+    /// * `election_id` - Election UUID for context
+    /// * `session_id` - Optional session ID (generated if None)
+    /// * `ip_address` - Optional IP address for audit trail
+    ///
+    /// # Security
+    ///
+    /// - Prevents timing attacks through constant-time operations
+    /// - Rate limits authentication attempts
+    /// - Detects and responds to suspicious patterns
+    /// - Maintains audit trail for compliance
+    ///
+    /// # Returns
+    ///
+    /// - `Success`: Valid voting token and session
+    /// - `RateLimited`: Too many requests
+    /// - `TooManyTokens`: Active token limit exceeded
+    /// - `SecurityLocked`: Account locked due to security concerns
     pub async fn secure_login(
         &self,
         bank_id: &str,
@@ -548,6 +666,19 @@ impl SecurityContext {
     }
 
     /// Secure voting with comprehensive security checks
+    ///
+    /// Performs secure voting with:
+    /// - Token validation and security logging
+    /// - Voting lock acquisition with double-voting prevention
+    /// - Security incident detection for suspicious patterns
+    /// - Comprehensive audit trail maintenance
+    ///
+    /// # Security Features
+    ///
+    /// - **Double Voting Prevention**: Detects attempts to vote multiple times
+    /// - **Concurrent Session Detection**: Prevents concurrent voting sessions
+    /// - **Token Security**: Validates tokens cryptographically
+    /// - **Audit Logging**: Records all voting attempts and outcomes
     pub async fn secure_vote(
         &self,
         token_id: &str,
@@ -701,7 +832,10 @@ impl SecurityContext {
         }
     }
 
-    /// Complete voting with security tracking
+    /// Complete voting with security tracking and token cleanup
+    ///
+    /// Finalizes the voting process with comprehensive security logging
+    /// and automatic token invalidation for security.
     pub async fn complete_voting(
         &self,
         lock: &crate::crypto::voting_lock::VoterLock,
@@ -760,6 +894,9 @@ impl SecurityContext {
     }
 
     /// Secure logout with comprehensive cleanup
+    ///
+    /// Performs secure session termination with complete token cleanup
+    /// and audit logging for security compliance.
     pub async fn secure_logout(
         &self,
         voter_hash: &str,
@@ -810,7 +947,7 @@ impl SecurityContext {
         Ok(logout_result)
     }
 
-    /// Get comprehensive security status
+    /// Get comprehensive security status for monitoring and debugging
     pub async fn get_security_status(
         &self,
         voter_hash: &str,
@@ -832,7 +969,7 @@ impl SecurityContext {
         })
     }
 
-    /// Get comprehensive security metrics
+    /// Get comprehensive security metrics for monitoring
     pub async fn get_security_metrics(&self) -> Result<SecurityMetrics> {
         let metrics = self
             .security_metrics
@@ -857,7 +994,72 @@ impl SecurityContext {
         Ok(updated_metrics)
     }
 
-    /// Private helper methods
+    // ===== AUDIT SYSTEM ACCESS =====
+
+    /// Get access to the enhanced audit system
+    pub fn audit_system(&self) -> &Arc<EnhancedAuditSystem> {
+        &self.audit_system
+    }
+
+    /// Query audit records with criteria
+    pub async fn query_audit_records(
+        &self,
+        query: AuditQuery,
+    ) -> Result<Vec<crate::crypto::audit::AuditRecord>> {
+        self.audit_system.query_audit_records(query).await
+    }
+
+    /// Export compliance report
+    pub async fn export_compliance_report(
+        &self,
+        query: AuditQuery,
+    ) -> Result<crate::crypto::audit::ComplianceReport> {
+        self.audit_system.export_compliance_report(query).await
+    }
+
+    /// Verify audit trail integrity
+    pub async fn verify_audit_integrity(
+        &self,
+    ) -> Result<crate::crypto::audit::AuditIntegrityReport> {
+        self.audit_system.verify_integrity().await
+    }
+
+    /// Get audit trail statistics
+    pub async fn get_audit_statistics(&self) -> Result<crate::crypto::audit::AuditTrailStatistics> {
+        self.audit_system.get_statistics().await
+    }
+
+    // ===== PERFORMANCE MONITORING ACCESS =====
+
+    /// Get access to the security performance monitor
+    pub fn performance_monitor(&self) -> &Arc<SecurityPerformanceMonitor> {
+        &self.performance_monitor
+    }
+
+    /// Get current security performance metrics
+    pub async fn get_security_performance_metrics(
+        &self,
+    ) -> Result<crate::crypto::security_monitoring::SecurityPerformanceMetrics> {
+        self.performance_monitor.get_current_metrics().await
+    }
+
+    /// Get timing statistics for a specific security operation
+    pub async fn get_operation_timing_stats(
+        &self,
+        operation: &SecurityOperation,
+    ) -> Result<Option<crate::crypto::security_monitoring::OperationTimingStats>> {
+        self.performance_monitor.get_timing_stats(operation).await
+    }
+
+    /// Get authentication patterns analysis
+    pub async fn get_authentication_patterns(
+        &self,
+    ) -> Result<Vec<crate::crypto::security_monitoring::AuthenticationPattern>> {
+        self.performance_monitor.get_auth_patterns().await
+    }
+
+    // ===== PRIVATE HELPER METHODS =====
+
     async fn log_security_event(&self, event: SecurityEvent) {
         if !self.config.security_logging_enabled {
             return;
@@ -1208,83 +1410,11 @@ impl SecurityContext {
             .as_secs()
     }
 
-    /// Get access to the enhanced audit system
-    pub fn audit_system(&self) -> &Arc<EnhancedAuditSystem> {
-        &self.audit_system
-    }
-
-    /// Query audit records with criteria
-    pub async fn query_audit_records(
-        &self,
-        query: AuditQuery,
-    ) -> Result<Vec<crate::crypto::audit::AuditRecord>> {
-        self.audit_system.query_audit_records(query).await
-    }
-
-    /// Export compliance report
-    pub async fn export_compliance_report(
-        &self,
-        query: AuditQuery,
-    ) -> Result<crate::crypto::audit::ComplianceReport> {
-        self.audit_system.export_compliance_report(query).await
-    }
-
-    /// Verify audit trail integrity
-    pub async fn verify_audit_integrity(
-        &self,
-    ) -> Result<crate::crypto::audit::AuditIntegrityReport> {
-        self.audit_system.verify_integrity().await
-    }
-
-    /// Get audit trail statistics
-    pub async fn get_audit_statistics(&self) -> Result<crate::crypto::audit::AuditTrailStatistics> {
-        self.audit_system.get_statistics().await
-    }
-
     /// Clean up expired audit records
     pub async fn cleanup_expired_audit_records(
         &self,
     ) -> Result<crate::crypto::audit::AuditCleanupReport> {
         self.audit_system.cleanup_expired().await
-    }
-
-    /// Get access to the security performance monitor
-    pub fn performance_monitor(&self) -> &Arc<SecurityPerformanceMonitor> {
-        &self.performance_monitor
-    }
-
-    /// Get current security performance metrics
-    pub async fn get_security_performance_metrics(
-        &self,
-    ) -> Result<crate::crypto::security_monitoring::SecurityPerformanceMetrics> {
-        self.performance_monitor.get_current_metrics().await
-    }
-
-    /// Get timing statistics for a specific security operation
-    pub async fn get_operation_timing_stats(
-        &self,
-        operation: &SecurityOperation,
-    ) -> Result<Option<crate::crypto::security_monitoring::OperationTimingStats>> {
-        self.performance_monitor.get_timing_stats(operation).await
-    }
-
-    /// Get authentication patterns analysis
-    pub async fn get_authentication_patterns(
-        &self,
-    ) -> Result<Vec<crate::crypto::security_monitoring::AuthenticationPattern>> {
-        self.performance_monitor.get_auth_patterns().await
-    }
-
-    /// Get detected DoS patterns
-    pub async fn get_dos_patterns(
-        &self,
-    ) -> Result<Vec<crate::crypto::security_monitoring::DoSPattern>> {
-        self.performance_monitor.get_dos_patterns().await
-    }
-
-    /// Update security performance baselines
-    pub async fn update_security_baselines(&self) -> Result<()> {
-        self.performance_monitor.update_baselines().await
     }
 
     /// Record custom security timing (for external integrations)
@@ -1306,6 +1436,18 @@ impl SecurityContext {
         usage: crate::crypto::security_monitoring::ResourceUsage,
     ) -> Result<()> {
         self.performance_monitor.record_resource_usage(usage).await
+    }
+
+    /// Get detected DoS patterns
+    pub async fn get_dos_patterns(
+        &self,
+    ) -> Result<Vec<crate::crypto::security_monitoring::DoSPattern>> {
+        self.performance_monitor.get_dos_patterns().await
+    }
+
+    /// Update security performance baselines
+    pub async fn update_security_baselines(&self) -> Result<()> {
+        self.performance_monitor.update_baselines().await
     }
 }
 
@@ -1345,7 +1487,7 @@ pub enum SecurityVoteResult {
     },
 }
 
-/// Comprehensive security status
+/// Comprehensive security status for monitoring and debugging
 #[derive(Debug)]
 pub struct SecurityStatus {
     pub voting_status: crate::crypto::VotingStatus,

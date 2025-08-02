@@ -33,9 +33,14 @@ clean: ## Clean build artifacts
 	@echo "✅ Clean complete"
 
 format: ## Format code
-	@echo "🎨 Formatting code..."
+	@echo " Formatting code..."
 	@cargo fmt
 	@echo "✅ Format complete"
+
+audit: ## Audit code
+	@echo "🔍 Auditing code..."
+	@cargo audit
+	@echo "✅ Audit complete"
 
 lint: ## Run clippy linting
 	@echo "🔍 Running clippy..."
@@ -59,5 +64,5 @@ dev: check test-simple ## Quick development check (compile + simple test)
 	@echo "✅ Development cycle complete"
 
 # Get ready before commit
-ready: check test lint format ## Quick development check (check + test + lint + format)
+ready: check test lint format audit ## Full development check (check + test + lint + format + audit)
 	@echo "✅ Ready to commit"

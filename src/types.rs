@@ -15,7 +15,7 @@
 //! ## Type Categories
 //!
 //! ### Cryptographic Primitives
-//! - [`Hash`]: 32-byte Blake3 cryptographic hashes
+//! - [`type@Hash`]: 32-byte Blake3 cryptographic hashes
 //! - [`Signature`]: 64-byte Ed25519 digital signatures
 //! - [`PublicKey`]: 32-byte Ed25519 public keys
 //! - [`VoterHash`]: Anonymized voter identifiers
